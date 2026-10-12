@@ -337,6 +337,22 @@ class RecoveryTests(unittest.TestCase):
 
 
 class IPNormalizationTests(unittest.TestCase):
+    def test_snapshot_selects_explicit_device_from_unfiltered_route_inventory(self):
+        backend = net.IPBackend("ens3")
+        calls = []
+        def command(arguments):
+            calls.append(arguments)
+            if "address" in arguments:
+                return json.dumps([{"ifname": "ens3", "ifindex": 2, "link_type": "ether", "flags": ["UP"], "mtu": 1500, "addr_info": []}])
+            if "-4" in arguments:
+                return json.dumps([{"dst": "default", "dev": "ens3", "gateway": "192.0.2.1", "protocol": "static"},
+                                   {"dst": "198.51.100.0/24", "dev": "peer0", "protocol": "kernel", "scope": "link"}])
+            return "[]"
+        with mock.patch.object(backend, "command", side_effect=command):
+            snapshot = backend.snapshot()
+        self.assertEqual(len(snapshot["objects"]), 1)
+        self.assertTrue(all("dev" not in arguments for arguments in calls if "route" in arguments))
+
     def test_ipv6_metric_and_preference_match_kernel_defaults(self):
         obj = net.normalized_object({"kind": "route", "family": 6, "dst": "::/0", "gateway": "fe80::1"}, "ens3")
         self.assertEqual(obj["metric"], 1024)
