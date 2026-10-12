@@ -101,6 +101,8 @@ class SystemView:
             metadata = dict(mode=stat.S_IMODE(info.st_mode), uid=info.st_uid, gid=info.st_gid,
                             inode=info.st_ino, device=info.st_dev, mtime_ns=info.st_mtime_ns)
             if stat.S_ISLNK(info.st_mode):
+                if os.listxattr(local, follow_symlinks=False):
+                    raise AuditError(f"{path}: symlink extended attributes require review")
                 result = FileState(path, "symlink", target=os.readlink(local), **metadata)
             elif stat.S_ISREG(info.st_mode):
                 if info.st_size > MAX_FILE_BYTES or info.st_nlink != 1:
@@ -113,6 +115,8 @@ class SystemView:
                             opened.st_mtime_ns) != (info.st_dev, info.st_ino, info.st_mode,
                                                    info.st_size, info.st_mtime_ns):
                         raise AuditError(f"{path}: changed while being inspected")
+                    if os.listxattr(stream.fileno()):
+                        raise AuditError(f"{path}: extended attributes/ACLs require a preservation backend")
                     data = stream.read(MAX_FILE_BYTES + 1)
                     after = os.fstat(stream.fileno())
                     if len(data) > MAX_FILE_BYTES or after.st_mtime_ns != opened.st_mtime_ns:

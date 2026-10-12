@@ -172,6 +172,19 @@ class HostPlanTests(unittest.TestCase):
         self.assertIn("alias", files["/etc/hosts"]["after"]["content"])
         self.assertIn("export EDITOR=vim", files["/home/razis/.profile"]["after"]["content"])
 
+    def test_extended_attributes_block_file_plan_without_losing_metadata(self):
+        path = self.root / "etc/hostname"
+        try:
+            os.setxattr(path, "user.rzandal-fixture", b"preserve me")
+        except OSError as error:
+            self.skipTest(f"Fixture filesystem does not support user xattrs: {error}")
+        before = self.snapshot()
+        report = self.report()
+        self.assertTrue(any("extended attributes" in blocker for blocker in report["blockers"]))
+        self.assertEqual(report["files"], [])
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(os.getxattr(path, "user.rzandal-fixture"), b"preserve me")
+
     def test_simulated_application_produces_no_changes_on_second_plan(self):
         first = self.report()
         self.assertFalse(first["blockers"])

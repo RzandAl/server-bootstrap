@@ -37,10 +37,23 @@ confirmation. A cancelled run leaves target bytes and live networking intact.
 
 ## 2. Transaction and network recovery
 
-Add a single-run lock, root-only state, backups including file types and
-metadata, atomic writes, an independent apply service and rollback timer,
-and a new-session acknowledgment of connectivity. Recheck staged assumptions
-before applying. Document a console recovery command.
+- [x] Single-run file lock and private state, with durable unique run IDs.
+- [x] Full changed-file backups: bytes/type, symlink target, owner, mode, mtime,
+  and original absence.
+- [x] Re-audit the complete reviewed plan, including live facts, then recheck
+  watched file fingerprints and include inventories before writing.
+- [x] Atomic file replacement with durable write intent, conflict-aware recovery,
+  and explicit rejection of unsupported extended attributes/ACLs.
+- [x] File recovery by a separate process after writer death, a console command,
+  and tests of corruption, concurrent/stale runs, and repeated recovery.
+- [ ] Independent apply service and rollback timer with durable boot recovery.
+- [ ] Restore live addresses/routes and preserve reused network state.
+- [ ] New-session acknowledgment, health checks, and timer disarming.
+
+The file layer is implemented in `0.3.0-dev`, tested on temporary roots, and
+documented in [File transactions](TRANSACTIONS.md). It does not restart services,
+restore running networking, or provide an automatic watchdog. Bootstrap apply
+stays unavailable until the remaining guarantees exist.
 
 **Acceptance:** a timeout, lost SSH session, failed step, signal, or stale run
 restores both original files and live network state. Reused addresses/routes

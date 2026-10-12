@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   validate:
-    name: Validate host plans on Debian 13
+    name: Validate plans and file recovery on Debian 13
     runs-on: ubuntu-24.04
     container: debian:trixie
     timeout-minutes: 10
@@ -39,8 +39,13 @@ jobs:
           assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?\n", version), version
           PY
 
-      - name: Run planning and regression tests
+      - name: Run planning and file-recovery tests as root
         run: python3 -m unittest discover -s tests -v
 
+      - name: Run isolated regression tests as an ordinary user
+        run: runuser -u nobody -- python3 -m unittest discover -s tests -v
+
       - name: Verify CLI help
-        run: python3 bootstrap.py --help
+        run: |
+          python3 bootstrap.py --help
+          python3 transaction.py --help
