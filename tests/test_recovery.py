@@ -382,6 +382,19 @@ class IPNormalizationTests(unittest.TestCase):
         self.assertEqual(len(snapshot["objects"]), 1)
         self.assertTrue(all("dev" not in arguments for arguments in calls if "route" in arguments))
 
+    def test_kernel_json_address_field_preserves_point_to_point_peer(self):
+        backend = net.IPBackend("ens3")
+        def command(arguments):
+            if "address" in arguments:
+                return json.dumps([{"ifname": "ens3", "ifindex": 2, "link_type": "ether", "flags": ["UP"], "mtu": 1500,
+                                    "addr_info": [{"family": "inet", "scope": "global", "local": "192.0.2.30",
+                                                   "address": "198.51.100.2", "prefixlen": 32, "label": "ens3"}]}])
+            return "[]"
+        with mock.patch.object(backend, "command", side_effect=command):
+            obj = backend.snapshot()["objects"][0]
+        self.assertEqual(obj["cidr"], "192.0.2.30/32")
+        self.assertEqual(obj["peer"], "198.51.100.2/32")
+
     def test_ipv6_metric_and_preference_match_kernel_defaults(self):
         obj = net.normalized_object({"kind": "route", "family": 6, "dst": "::/0", "gateway": "fe80::1"}, "ens3")
         self.assertEqual(obj["metric"], 1024)
