@@ -27,8 +27,12 @@ def require_container():
 def wait_for(predicate, seconds=20):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        if predicate():
-            return
+        try:
+            result = predicate()
+            if result:
+                return result
+        except tx.BusyRun:
+            pass  # A writer/rollback legitimately holds the project's lock.
         time.sleep(0.15)
     raise AssertionError("Integration condition did not complete before timeout")
 
@@ -79,7 +83,9 @@ class Fixture:
 
     def applied(self):
         config = self.supervisor.load(self.run_id)
-        return self.supervisor.network(self.run_id, config).load()["phase"] == "applied"
+        phase = self.supervisor.network(self.run_id, config).load()["phase"]
+        state = self.supervisor.systemd.command("show", "--property=ActiveState", "--value", config["units"]["apply"]).strip()
+        return phase == "applied" and state == "inactive"
 
     def start(self):
         self.supervisor.start(self.run_id)
@@ -90,9 +96,10 @@ class Fixture:
             raise AssertionError("Original file, IPv4/IPv6 addresses, and main routes were not restored")
 
     def close(self):
-        if self.manager.status(self.run_id)["phase"] not in tx.FINAL_PHASES:
-            if self.manager.status(self.run_id).get("supervised"):
-                self.supervisor.recover(self.run_id)
+        status = wait_for(lambda: self.manager.status(self.run_id))
+        if status["phase"] not in tx.FINAL_PHASES:
+            if status.get("supervised"):
+                wait_for(lambda: self.supervisor.recover(self.run_id))
             else:
                 self.manager.recover(self.run_id)
         subprocess.run(["ip", "netns", "delete", self.namespace], check=True)
