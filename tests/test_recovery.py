@@ -336,6 +336,19 @@ class RecoveryTests(unittest.TestCase):
             self.supervisor.recover(self.run_id)
         self.assertTrue((self.manager.state_dir / "active.json").exists())
 
+    def test_last_address_kernel_side_effect_restores_gateway_route_before_default(self):
+        self.arm()
+        self.apply()
+        mutate = self.ip.mutate
+        def lose_last_address_routes(action, obj):
+            mutate(action, obj)
+            if action == "delete" and obj == self.new_address:
+                self.ip.objects.remove(self.ip.gateway_route)
+                self.ip.objects.remove(self.new_default)
+        with mock.patch.object(self.ip, "mutate", side_effect=lose_last_address_routes):
+            self.supervisor.recover(self.run_id)
+        self.assertEqual(self.ip.snapshot(), self.before)
+
     def test_unit_paths_and_timeouts_reject_systemd_injection(self):
         for path in ("/tmp/a%h", "/tmp/a b", "/tmp/a\nExecStart=/bin/false"):
             with self.subTest(path=path), self.assertRaises(tx.TransactionError):
