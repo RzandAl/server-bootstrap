@@ -58,6 +58,9 @@ class FakeSystemd:
     def generation(self):
         return self.boot
 
+    def ready(self):
+        pass
+
     def command(self, *arguments, **options):
         self.calls.append(arguments)
         if self.fail_command == arguments[0]:
@@ -153,6 +156,19 @@ class RecoveryTests(unittest.TestCase):
         self.assertTrue((self.manager.state_dir / "active.json").exists())
         self.supervisor.recover(self.run_id)
         self.fixture.assert_originals()
+        self.assertEqual(self.ip.snapshot(), self.before)
+
+    def test_implicit_kernel_deletion_cannot_be_reported_as_success(self):
+        self.arm()
+        mutate = self.ip.mutate
+        def kernel_side_effect(action, obj):
+            mutate(action, obj)
+            if action == "delete" and obj == self.ip.old_address:
+                self.ip.objects.remove(self.new_address)
+        with mock.patch.object(self.ip, "mutate", side_effect=kernel_side_effect):
+            with self.assertRaises(tx.StalePlan):
+                self.apply()
+        self.supervisor.recover(self.run_id)
         self.assertEqual(self.ip.snapshot(), self.before)
 
     def test_write_intent_recovers_crash_immediately_after_network_mutation(self):
