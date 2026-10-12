@@ -355,6 +355,12 @@ class AptRendererTests(unittest.TestCase):
 
 
 class OtherPreservationTests(unittest.TestCase):
+    def test_held_installed_packages_are_not_proposed_for_reinstallation(self):
+        result = host.installed_packages("curl\thi \nifupdown\tii \nold-package\trc \n")
+        self.assertEqual(result, {"curl", "ifupdown"})
+        with self.assertRaisesRegex(host.AuditError, "reinstall-required"):
+            host.installed_packages("curl\tiiR\n")
+
     def test_hostname_change_preserves_aliases_and_replaces_fqdn_and_short_name(self):
         result = host.render_hosts("127.0.0.1 localhost\n127.0.1.1 oldhost oldhost.example alias # keep\n", "oldhost.example", "newhost")
         self.assertEqual(result, "127.0.0.1 localhost\n127.0.1.1\tnewhost alias # keep\n")
@@ -380,7 +386,9 @@ class IfupdownSyntaxTests(unittest.TestCase):
             result = subprocess.run(["ifquery", "--interfaces", str(path), "ens3"], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("pointopoint: 198.51.100.1", result.stdout)
-        self.assertIn("2001:db8:1234::2/64", result.stdout)
+        self.assertIn("address: 2001:db8:1234::2\n", result.stdout)
+        self.assertIn("netmask: 64\n", result.stdout)
+        self.assertIn("netmask: 255.255.255.255\n", result.stdout)
 
 
 if __name__ == "__main__":
