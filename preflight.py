@@ -325,6 +325,22 @@ def official_uri(uri: str) -> bool:
             and parsed.path.rstrip("/") in {"/debian", "/debian-security"})
 
 
+def installed_packages(output: str) -> set[str]:
+    installed = set()
+    for line in output.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 2 or len(fields[1]) != 3:
+            raise AuditError("Malformed dpkg package inventory")
+        package, status = fields
+        if status[2] != " ":
+            raise AuditError(f"dpkg reports an error/reinstall-required state: {package}")
+        # The first character is the desired selection (including 'h' for hold).
+        # The second character describes what is actually installed.
+        if status[1] == "i":
+            installed.add(package)
+    return installed
+
+
 def render_apt(documents: dict[str, str], sources: list[str]) -> dict[str, str]:
     suites = {"trixie", "trixie-security", "trixie-updates"}
     output = {}
@@ -472,7 +488,7 @@ def prepare_host_plan(profile: Any, account: Any, plan: dict[str, Any], timezone
     if code or "c.utf8" not in {name.lower().replace("-", "") for name in output.splitlines()}:
         blockers.append("C.UTF-8 is not available or locale inventory failed")
     code, output = view.query(["dpkg-query", "-W", "-f=${Package}\t${db:Status-Abbrev}\n"])
-    packages = {line.split("\t", 1)[0] for line in output.splitlines() if "\t" in line and line.split("\t", 1)[1].startswith("ii")}
+    packages = check(lambda: installed_packages(output)) or set()
     if code:
         blockers.append("Installed package inventory failed")
     facts["missing_base_packages"] = sorted(set(base["packages"]) - packages)
