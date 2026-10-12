@@ -1,9 +1,10 @@
 # Planning and architecture
 
 This is the working design for the apply-capable first release. The current
-`0.3.0-dev` build implements collection, validation, read-only host preflight,
-exact in-memory file candidates, and an internal durable file backend tested
-on isolated roots. The bootstrap CLI does not execute the apply workflow yet.
+`0.4.0-dev` build implements collection, validation, read-only host preflight,
+exact file candidates, durable file transactions, and independent systemd/network
+recovery tested on isolated roots and namespaces. The bootstrap CLI does not
+execute the production apply workflow yet.
 
 ## Scope
 
@@ -272,8 +273,8 @@ unavailable C.UTF-8 locale also block staging; collection installs nothing.
 All candidates are withheld if any blocker is found. This is an eligibility
 and file-plan check, not proof of connectivity or an apply-ready transaction.
 Global hook/package effects, full provider routing, command-line and external
-locale/environment sources, independent automatic recovery,
-and live transition verification remain part of the apply milestone. File
+locale/environment sources, production supervisor wiring, fresh SSH acknowledgment,
+and live VPS transition verification remain part of the apply milestone. File
 plans contain machine-specific data and must remain outside Git.
 
 ## Idempotency and recovery
@@ -312,6 +313,14 @@ second runs, and reboot persistence have been tested on a disposable VPS.
 The file part of this design is implemented in `transaction.py`; see
 [File transactions](TRANSACTIONS.md) for its state format, tested interruption
 cases, console recovery, and the live-network guarantees still pending.
+
+`recovery.py` now supplies protected worker bundles, independent deadlines,
+combined file/network recovery, and early-boot file restoration.
+`network_recovery.py` records static-address and main-table route deltas,
+preserving reused objects and refusing observed external conflicts. See
+[Independent recovery](RECOVERY.md) for the supported subset and verification.
+Detached application and commit are restricted to fixture roots. They cannot
+authorize or enable production Base through a command-line flag.
 
 ## Sources
 

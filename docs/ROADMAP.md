@@ -46,14 +46,18 @@ confirmation. A cancelled run leaves target bytes and live networking intact.
   and explicit rejection of unsupported extended attributes/ACLs.
 - [x] File recovery by a separate process after writer death, a console command,
   and tests of corruption, concurrent/stale runs, and repeated recovery.
-- [ ] Independent apply service and rollback timer with durable boot recovery.
-- [ ] Restore live addresses/routes and preserve reused network state.
+- [x] Protected detached fixture worker, independent persistent/monotonic rollback
+  timer, and early-boot file recovery under systemd.
+- [x] Restore owned static addresses/main routes, preserve reused objects, and
+  verify actual IPv4/IPv6 kernel behavior in isolated namespaces.
+- [ ] Connect production Base to the supervisor after host/probe contracts are ready.
 - [ ] New-session acknowledgment, health checks, and timer disarming.
 
-The file layer is implemented in `0.3.0-dev`, tested on temporary roots, and
-documented in [File transactions](TRANSACTIONS.md). It does not restart services,
-restore running networking, or provide an automatic watchdog. Bootstrap apply
-stays unavailable until the remaining guarantees exist.
+The file layer arrived in `0.3.0-dev`; `0.4.0-dev` adds the independent supervisor
+and owned network journal. [Independent recovery](RECOVERY.md) describes the
+Debian/systemd namespace scenarios, manager-restart test, explicit fixture-only
+writer/commit gate, and remaining provider/VPS validation. Production Bootstrap
+apply stays unavailable until its acknowledgment and probe guarantees exist.
 
 **Acceptance:** a timeout, lost SSH session, failed step, signal, or stale run
 restores both original files and live network state. Reused addresses/routes

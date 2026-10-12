@@ -360,6 +360,8 @@ class FileTransaction:
                 or len(set(journal["attempted"])) != len(journal["attempted"])):
             raise TransactionError("Invalid journal or backup checksum")
         attempted = journal["attempted"]
+        if "supervised" in journal and type(journal["supervised"]) is not bool:
+            raise TransactionError("Invalid supervisor marker")
         if (attempted != paths[:len(attempted)]
                 or (journal["phase"] == "prepared" and attempted)
                 or (journal["phase"] in {"applied", "committed"} and attempted != paths)):
@@ -493,11 +495,14 @@ class FileTransaction:
                     raise RecoveryError(f"File write failed; recovery needs attention: {recovery_error}") from error
                 raise
 
-    def _recover(self, run_id: str) -> dict[str, Any]:
+    def _recover(self, run_id: str, *, coordinated: bool = False,
+                 participant: Callable[[], None] | None = None) -> dict[str, Any]:
         backup, journal = self._run(run_id)
         if journal["phase"] in FINAL_PHASES:
             self._clear(run_id)
             return journal
+        if journal.get("supervised") and not coordinated:
+            raise RecoveryError("Supervised run: use recovery.py recover for combined file/network recovery")
         if self._active() != run_id:
             raise TransactionError("Recovery may restore only the active run")
         journal["phase"] = "rolling_back"
@@ -513,6 +518,11 @@ class FileTransaction:
                 if not same_file(current, entry["after"]):
                     raise RecoveryError(f"{path}: external change; preserved for manual review")
                 self.fs.replace(path, entry["before"], expected=fingerprint(current), restore_time=True)
+            except (TransactionError, OSError) as error:
+                failures.append(str(error))
+        if participant is not None:
+            try:
+                participant()
             except (TransactionError, OSError) as error:
                 failures.append(str(error))
         journal["phase"] = "recovery_failed" if failures else "rolled_back"
@@ -531,15 +541,20 @@ class FileTransaction:
     def commit(self, run_id: str) -> None:
         """Future supervisor calls only after its own health/connectivity checks."""
         with self._lock():
-            backup, journal = self._run(run_id)
-            if self._active() != run_id or journal["phase"] != "applied":
-                raise TransactionError("Only the active applied run can commit")
-            for entry in backup["files"]:
-                if not same_file(self.fs.snapshot(entry["path"]), entry["after"]):
-                    raise StalePlan(f"{entry['path']}: candidate changed before commit")
-            journal["phase"] = "committed"
-            self._save(f"/runs/{run_id}/journal.json", journal)
-            self._clear(run_id)
+            self._commit_locked(run_id)
+
+    def _commit_locked(self, run_id: str, *, coordinated: bool = False) -> None:
+        backup, journal = self._run(run_id)
+        if journal.get("supervised") and not coordinated:
+            raise TransactionError("Supervised run requires the recovery supervisor's health checks")
+        if self._active() != run_id or journal["phase"] != "applied":
+            raise TransactionError("Only the active applied run can commit")
+        for entry in backup["files"]:
+            if not same_file(self.fs.snapshot(entry["path"]), entry["after"]):
+                raise StalePlan(f"{entry['path']}: candidate changed before commit")
+        journal["phase"] = "committed"
+        self._save(f"/runs/{run_id}/journal.json", journal)
+        self._clear(run_id)
 
     def status(self, run_id: str) -> dict[str, Any]:
         with self._lock():
