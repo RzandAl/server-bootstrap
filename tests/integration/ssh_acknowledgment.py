@@ -69,6 +69,9 @@ PermitUserEnvironment no
                           ["-4", "route", "add", "198.51.100.20/32", "dev", "peer0"],
                           ["-6", "route", "add", "2001:db8:2::20/128", "dev", "peer0"]):
             run(["ip", "-n", self.namespace, *arguments], check=True)
+        # The client has its own DAD lifecycle; server readiness alone does not
+        # establish that its IPv6 source address is usable yet.
+        kernel.net.IPBackend("peer0", namespace=self.namespace).settled()
         self.log = (self.directory / "server.log").open("wb")
         self.server = subprocess.Popen(["ip", "netns", "exec", fixture.namespace, "/usr/sbin/sshd", "-D", "-e", "-f", str(config)],
                                        stdout=subprocess.DEVNULL, stderr=self.log, start_new_session=True)
@@ -77,7 +80,7 @@ PermitUserEnvironment no
 
     def arguments(self, user, target):
         return ["ip", "netns", "exec", self.namespace, "ssh", "-p", "2222", "-i", str(self.client_key),
-                "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=3",
+                "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=8",
                 "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={self.known_hosts}",
                 f"{user}@{target}"]
 
@@ -88,7 +91,15 @@ PermitUserEnvironment no
             # A refused/missing multiplex channel must not fall back to a new
             # TCP transport and turn this refusal scenario into a fresh login.
             arguments[-1:-1] = ["-o", "ProxyCommand=/bin/false"]
-        return run([*arguments, command])
+        result = run([*arguments, command])
+        if result.returncode == 255:
+            # Only owned fixture namespaces are inspected. No keys are printed.
+            diagnostics = []
+            for namespace in (self.namespace, self.fixture.namespace):
+                for kind in ("address", "route", "neighbour"):
+                    diagnostics.append(run(["ip", "-n", namespace, "-j", "-6", kind, "show"]).stdout.strip())
+            result.stderr += "\nOwned IPv6 transport diagnostics: " + json.dumps(diagnostics) + "\n"
+        return result
 
     def master(self, target="198.51.100.20"):
         control = self.directory / ("control-" + uuid.uuid4().hex[:8])
