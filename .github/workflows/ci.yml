@@ -71,7 +71,8 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/opt/bootstrap:ro" \
             --env RZANDAL_RECOVERY_CI=1 rzandal-recovery-ci
           for attempt in $(seq 1 30); do
-            if docker exec rzandal-recovery-ci systemctl show --property=UserspaceTimestampMonotonic --value; then
+            if docker exec rzandal-recovery-ci test -S /run/dbus/system_bus_socket && \
+              docker exec rzandal-recovery-ci systemctl show --property=UserspaceTimestampMonotonic --value; then
               exit 0
             fi
             sleep 1
