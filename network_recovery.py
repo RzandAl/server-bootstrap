@@ -311,6 +311,7 @@ class NetworkJournal:
                 raise tx.RecoveryError("Network command did not produce its expected state")
             entry["phase"] = "done"
             self.manager._save(self.path, data)
+        self.verify_result(data)
         data["phase"] = "applied"
         self.manager._save(self.path, data)
 
@@ -367,6 +368,9 @@ class NetworkJournal:
         data = self.load()
         if data["phase"] != "applied":
             raise tx.TransactionError("Network application has not completed")
+        self.verify_result(data)
+
+    def verify_result(self, data: dict[str, Any]) -> None:
         current = self.current(data)
         expected = {}
         for entry in data["operations"]:

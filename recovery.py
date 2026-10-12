@@ -70,6 +70,10 @@ def unit_texts(run_id: str, worker: Path, state_dir: Path, timeout: int, deadlin
 
 
 class Systemd:
+    def ready(self) -> None:
+        if not Path("/run/systemd/private").is_socket() or not Path("/run/dbus/system_bus_socket").is_socket():
+            raise tx.TransactionError("Independent recovery requires systemd and a working system D-Bus socket")
+
     def command(self, *arguments: str, allow_missing: bool = False) -> str:
         executable = shutil.which("systemctl", path=net.SYSTEM_PATH)
         if executable is None:
@@ -142,6 +146,7 @@ class RecoverySupervisor:
         worker = worker_dir / "recovery.py"
         deadline = time.time_ns() + timeout * 1_000_000_000
         texts = unit_texts(run_id, worker, self.manager.state_dir, timeout, deadline)
+        self.systemd.ready()
         generation = self.systemd.generation()
         with self.manager._lock():
             backup, journal = self.manager._run(run_id)
@@ -232,12 +237,13 @@ class RecoverySupervisor:
         with self.manager._lock():
             self.network(run_id, config).apply_locked()
 
-    def cleanup(self, run_id: str, config: dict[str, Any]) -> None:
+    def cleanup(self, run_id: str, config: dict[str, Any], *, clean_stamp: bool = True) -> None:
         # Stop/disable only names generated for this run. Do not stop this recovery
         # service from inside itself; it exits normally after cleanup.
         self.systemd.command("disable", "--now", config["units"]["timer"], allow_missing=True)
         self.systemd.command("disable", config["units"]["boot"], allow_missing=True)
-        self.systemd.command("clean", "--what=state", config["units"]["timer"], allow_missing=True)
+        if clean_stamp:
+            self.systemd.command("clean", "--what=state", config["units"]["timer"], allow_missing=True)
         for name, text in config["unit_texts"].items():
             current = self.units_fs.snapshot("/" + name)
             if current["kind"] == "absent":
@@ -269,7 +275,9 @@ class RecoverySupervisor:
                 raise
             config["phase"] = journal["phase"]
             self.manager._save(self.path(run_id), config)
-        self.cleanup(run_id, config)
+            # Early boot precedes the system bus. Disable units and restore files
+            # using the manager's private socket; retain the harmless timer stamp.
+            self.cleanup(run_id, config, clean_stamp=not different_boot)
         return journal
 
     def commit_fixture(self, run_id: str, *, verify: Callable[[], bool]) -> None:
@@ -286,7 +294,7 @@ class RecoverySupervisor:
             self.manager._commit_locked(run_id, coordinated=True)
             config["phase"] = "committed"
             self.manager._save(self.path(run_id), config)
-        self.cleanup(run_id, config)
+            self.cleanup(run_id, config)
 
 
 def cli_manager(run_id: str) -> tx.FileTransaction:
