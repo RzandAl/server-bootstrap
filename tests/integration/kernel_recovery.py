@@ -179,6 +179,7 @@ guard.RecoverySupervisor(manager).start(sys.argv[2])
         journal = net.NetworkJournal(fixture.manager, fixture.run_id, fixture.ip)
         with fixture.manager._lock():
             addresses = [obj for obj in before["objects"] if obj["kind"] == "address" and obj["family"] == 4 and obj["cidr"] != "192.0.2.10/32"]
+            print("Kernel fixture address objects:", json.dumps(addresses), flush=True)
             journal.prepare_locked([{"action": "delete", "object": obj} for obj in addresses])
             journal.apply_locked()
             journal.recover_locked()
