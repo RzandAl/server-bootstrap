@@ -23,7 +23,7 @@ jobs:
       - name: Install validation prerequisites
         run: |
           apt-get update
-          apt-get install --yes --no-install-recommends ca-certificates git python3 tzdata ifupdown iproute2
+          apt-get install --yes --no-install-recommends ca-certificates git python3 tzdata ifupdown iproute2 systemd
 
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,3 +49,56 @@ jobs:
         run: |
           python3 bootstrap.py --help
           python3 transaction.py --help
+          python3 -I recovery.py --help
+
+  recovery-integration:
+    name: Exercise independent recovery with Debian systemd and kernel namespaces
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build disposable Debian 13 recovery environment
+        run: docker build --tag rzandal-recovery-ci --file tests/integration/Dockerfile .
+
+      - name: Start isolated systemd container
+        run: |
+          docker run --detach --name rzandal-recovery-ci --privileged --cgroupns=private \
+            --tmpfs /run --tmpfs /run/lock \
+            --volume "$GITHUB_WORKSPACE:/opt/bootstrap:ro" \
+            --env RZANDAL_RECOVERY_CI=1 rzandal-recovery-ci
+          for attempt in $(seq 1 30); do
+            if docker exec rzandal-recovery-ci systemctl show --property=UserspaceTimestampMonotonic --value; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Test owned network changes and independent recovery
+        run: docker exec --workdir /opt/bootstrap rzandal-recovery-ci python3 tests/integration/kernel_recovery.py -v
+
+      - name: Prepare an unresolved run then restart the system manager
+        run: |
+          docker exec --workdir /opt/bootstrap rzandal-recovery-ci python3 tests/integration/kernel_recovery.py prepare-boot
+          docker restart --time 5 rzandal-recovery-ci
+          for attempt in $(seq 1 30); do
+            if docker exec rzandal-recovery-ci systemctl show --property=UserspaceTimestampMonotonic --value; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec --workdir /opt/bootstrap rzandal-recovery-ci python3 tests/integration/kernel_recovery.py verify-boot
+
+      - name: Show recovery diagnostics
+        if: failure()
+        run: |
+          docker logs rzandal-recovery-ci || true
+          docker exec rzandal-recovery-ci journalctl --no-pager --unit 'rzandal-bootstrap-*' || true
+
+      - name: Remove disposable environment
+        if: always()
+        run: docker rm --force rzandal-recovery-ci || true
