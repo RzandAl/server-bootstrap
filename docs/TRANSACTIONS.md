@@ -82,8 +82,10 @@ These commands restore files only. A supervised run deliberately refuses bare
 file recovery or commit: use `recovery.py recover <run-id>` for its coordinated
 file/network lifecycle. The independent supervisor, protected bundle, timer,
 and owned-network journal were added in `0.4.0-dev`; see
-[Independent recovery](RECOVERY.md). Fresh SSH acknowledgment and production
-Base wiring remain pending. No VPS reboot guarantee is claimed in this build.
+[Independent recovery](RECOVERY.md). `0.5.0-dev` adds
+[fresh SSH acknowledgment](SSH_ACKNOWLEDGMENT.md) for isolated fixtures; final
+health is rechecked before terminal commit. Production Base/probe/module wiring
+remain pending. No VPS reboot guarantee is claimed in this build.
 
 ## Verification
 

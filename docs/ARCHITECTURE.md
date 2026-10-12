@@ -1,9 +1,9 @@
 # Planning and architecture
 
 This is the working design for the apply-capable first release. The current
-`0.4.0-dev` build implements collection, validation, read-only host preflight,
+`0.5.0-dev` build implements collection, validation, read-only host preflight,
 exact file candidates, durable file transactions, and independent systemd/network
-recovery tested on isolated roots and namespaces. The bootstrap CLI does not
+recovery with fresh SSH acknowledgment tested on isolated roots and namespaces. The bootstrap CLI does not
 execute the production apply workflow yet.
 
 ## Scope
@@ -95,7 +95,7 @@ Validation has three distinct layers:
 | --- | --- | --- |
 | Value validation | Short hostname, Linux interface name, account name, complete IP parser, numeric prefixes, address families, known timezone | Implemented |
 | Host eligibility | Debian 13, invoking account/home, prerequisites, locale, live interface/routes, network/DNS/APT ownership | Implemented for the supported static ifupdown subset; unsupported migrations blocked |
-| Connectivity | DAD, gateway routing, external reachability, new SSH session | Pending; never inferred from valid syntax |
+| Connectivity | DAD, gateway routing, external reachability, new SSH session | DAD and fresh SSH acknowledgment tested in fixtures; gateway/external probes and production wiring pending |
 
 `ipaddress` rejects the previous `22a12:...` typo because an IPv6 hextet may not
 contain five hexadecimal digits. CIDR values must use numeric prefixes, not
@@ -141,6 +141,14 @@ off-link IPv6 gateways block staging.
 Do not run a blind `systemctl restart networking` over SSH. Plan the exact
 transition with rollback and preserve the route carrying the current session
 until the candidate path has been verified.
+
+Fresh acknowledgment uses protected OpenSSH process ancestry and its live kernel
+TCP socket. The authenticated account must match the original invoking account,
+the server endpoint must be a planned candidate address, and the per-connection
+monitor must have started after application completed. An old SSH transport,
+including a new multiplexed channel, cannot commit. Final file/network health
+and both deadlines are checked before durable terminal state and timer cleanup.
+[SSH acknowledgment](SSH_ACKNOWLEDGMENT.md) describes the fixture-only contract.
 
 ## IPv6 probe contract
 
