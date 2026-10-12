@@ -1,8 +1,9 @@
 # Planning and architecture
 
 This is the working design for the apply-capable first release. The current
-`0.2.0-dev` build implements collection, validation, read-only host preflight,
-and exact in-memory file candidates. None of the apply procedures below runs yet.
+`0.3.0-dev` build implements collection, validation, read-only host preflight,
+exact in-memory file candidates, and an internal durable file backend tested
+on isolated roots. The bootstrap CLI does not execute the apply workflow yet.
 
 ## Scope
 
@@ -181,7 +182,8 @@ old settings cannot survive unnoticed.
 The invoking account gets a single managed `export TZ=Europe/Moscow` block in
 its real home directory's `.profile`. Preserve unrelated content and ownership.
 The pure renderer already replaces its own block without appending duplicates
-and rejects malformed markers. It does not write files yet. Preflight conservatively
+and rejects malformed markers. The renderer stays pure; the internal file
+backend is separate. Preflight conservatively
 blocks unmanaged `TZ`, `LANG`, `LANGUAGE`, or `LC_*` assignments in inspected
 startup files, and an existing `.bash_profile` or `.bash_login` under Bash.
 It preserves those files for explicit review rather than guessing shell flow. This setting governs that account's login-shell environment; it
@@ -249,7 +251,8 @@ diffs. JSON includes exact candidates, file types, ownership/mode, content
 hashes, and inode/mtime fingerprints of inspected files. Included directories
 and glob results are recorded too, so a future apply can detect newly added
 fragments. No staging directory, backup, package operation, hook, service
-restart, address addition, DAD test, or external probe runs in this version.
+restart, address addition, DAD test, or external probe runs from the bootstrap
+CLI. The internal file backend is exercised separately in isolated tests.
 
 The supported subset is Debian 13, active ifupdown, one plain Ethernet primary
 interface, simple static/manual stanzas, and an unmanaged regular resolver.
@@ -260,7 +263,8 @@ retains supported MTU, metric, and MAC options for the selected interface.
 Cycles/repeated includes, symlinks, duplicate address stanzas, mappings,
 renames, lifecycle hooks in the selected stanza, templates, inline comments,
 continuations, DHCP/SLAAC, cloud-init presence, custom policy rules, active
-alternate managers, resolver lifecycle packages, and unsafe file types block
+alternate managers, resolver lifecycle packages, unsafe file types, and
+unsupported extended attributes/ACLs block
 staging. Cloud-init migration is not guessed from partial YAML parsing.
 A generated resolver is not silently unlinked. Missing tools/packages and an
 unavailable C.UTF-8 locale also block staging; collection installs nothing.
@@ -268,7 +272,7 @@ unavailable C.UTF-8 locale also block staging; collection installs nothing.
 All candidates are withheld if any blocker is found. This is an eligibility
 and file-plan check, not proof of connectivity or an apply-ready transaction.
 Global hook/package effects, full provider routing, command-line and external
-locale/environment sources, stale-state revalidation, independent recovery,
+locale/environment sources, independent automatic recovery,
 and live transition verification remain part of the apply milestone. File
 plans contain machine-specific data and must remain outside Git.
 
@@ -277,7 +281,10 @@ plans contain machine-specific data and must remain outside Git.
 Idempotency is an acceptance condition for the first apply-capable release.
 Repeated planning is deterministic. Tests simulate writing the candidate
 files to isolated fixtures and confirm that the next plan has no changed
-files, including managed blocks, normalized APT sources, and the UTC symlink. System-wide idempotency has not been implemented or tested.
+files, including managed blocks, normalized APT sources, and the UTC symlink.
+The transaction backend also consumes an actual preflight plan in a fixture,
+commits it, and confirms a second plan creates no state or target rewrites.
+System-wide idempotency has not been implemented or tested.
 
 - Compare candidate content and metadata before writing. Healthy unchanged
   targets do not get a new backup or modified timestamp.
@@ -301,6 +308,10 @@ files, including managed blocks, normalized APT sources, and the UTC symlink. Sy
 Concurrent runs require a single project lock and an explicit stale-run
 recovery path. No apply-capable release will be tagged until interrupted runs,
 second runs, and reboot persistence have been tested on a disposable VPS.
+
+The file part of this design is implemented in `transaction.py`; see
+[File transactions](TRANSACTIONS.md) for its state format, tested interruption
+cases, console recovery, and the live-network guarantees still pending.
 
 ## Sources
 
