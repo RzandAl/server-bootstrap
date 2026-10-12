@@ -9,14 +9,15 @@ backups and recovery.
 
 > **Target platform:** Debian 13 (trixie), with ifupdown networking.
 >
-> **Development status:** `0.1.0-dev` implements a read-only planning wizard.
+> **Development status:** `0.2.0-dev` implements a read-only wizard, host preflight,
+> and exact in-memory file candidates with diffs.
 > Applying configuration, installing packages, and installing modules are not
 > implemented yet. No production release is available.
 
 ## Highlights
 
-- Collects hostname, interface, existing account, static IPv4, optional static
-  IPv6, gateways, and user timezone.
+- Collects hostname, interface, static IPv4, optional static IPv6, gateways,
+  and user timezone; the timezone target is the invoking account.
 - Detects the interface used to reach the SSH client when possible, then falls
   back to an unambiguous default-route interface.
 - Validates complete IPv4 and IPv6 addresses with Python's standard `ipaddress`
@@ -27,8 +28,12 @@ backups and recovery.
 - Produces a complete text or JSON plan without changing the system.
 - Keeps MOTD selection and its pinned source reference separate from future
   firewall and VPN modules.
-- Provides a repeatable managed `.profile` timezone-block renderer for the
-  future apply engine; it preserves content outside its own block.
+- Resolves direct and sudo callers through passwd, using their real home.
+- Audits OS, prerequisites, services, resolver ownership, live addresses/routes,
+  ifupdown includes, APT sources, and shell timezone/locale conflicts.
+- Produces exact file candidates, metadata, fingerprints, and unified diffs.
+- Preserves unrelated interfaces, third-party repositories, and user content;
+  unsupported ownership or migration blocks the entire file plan.
 
 ## Standard profile
 
@@ -36,7 +41,7 @@ backups and recovery.
 | --- | --- |
 | System locale | `C.UTF-8`; no additional locales generated |
 | System timezone | `UTC` |
-| User | Existing `razis` account |
+| User | Invoking account; original caller under `sudo`, root on direct root launch |
 | User timezone | `Europe/Moscow` through a managed `.profile` block |
 | Interface | Autodetect; `ens3` is the usual deployment interface |
 | IPv4 DNS | `1.1.1.1`, `9.9.9.10` |
@@ -63,13 +68,19 @@ require ifupdown and working CA certificates; the existing MOTD installer needs
 | Apply target | Debian 13 (trixie), single primary VPS interface, ifupdown |
 | Planner runtime | Linux, Python 3.11 or newer, installed IANA timezone data |
 | Network profiles | Static IPv4, including `/32`; optional static IPv6 |
-| Local validation | Automated parser, planning, discovery, and profile-block tests |
-| CI | The same tests in a Debian 13 container |
+| Local validation | Automated parser, host-audit, preservation, and repeat-planning tests |
+| CI | The same tests plus actual ifupdown parser validation in Debian 13 |
 | Live VPS apply | Pending; no apply implementation exists yet |
 
-The initial scope uses an existing account. Creating users, adding SSH keys,
-changing sudo rights, and changing SSH authentication are separate decisions.
-Other network managers require an explicit migration design.
+The account is detected, not selected or created. `USER`, `LOGNAME`, and `HOME`
+are not account authorities. Consistent `SUDO_UID`, `SUDO_GID`, and `SUDO_USER`
+identify the original caller when running as root through sudo. A saved
+profile may omit `user`; if present, it must match that caller.
+
+Host file planning currently supports static/manual ifupdown on a plain VPS
+Ethernet interface with a regular resolver file. DHCP/SLAAC migrations,
+cloud-init, active alternate managers, custom policy routing, and complex
+ifupdown stanzas stop preflight with an explanation. Apply remains pending.
 
 ## Quick use
 
@@ -88,9 +99,16 @@ Validate and preview a saved profile:
 python3 bootstrap.py --config profiles/server.json
 python3 bootstrap.py --config profiles/server.json --json
 python3 bootstrap.py --config profiles/server.json --inspect
+python3 bootstrap.py --config profiles/server.json --diff
 ```
 
-Keep machine-specific profiles outside Git; `/profiles/` is ignored.
+`--inspect` runs host preflight and lists exact candidate files. `--diff` also
+prints their unified diffs; `--inspect --json` includes their complete content
+and inspected fingerprints. Candidates remain in memory. Exit status `2` means
+invalid input or a blocked host plan; no candidate files are returned for a
+blocked host. Nothing is applied, and no confirmation is requested yet.
+
+Keep machine-specific profiles and generated host plans outside Git; `/profiles/` is ignored.
 The profile format and a documentation-address example are in
 [Planning and architecture](docs/ARCHITECTURE.md#profile-format).
 
@@ -98,7 +116,7 @@ The profile format and a documentation-address example are in
 
 | Module | Scope | Status |
 | --- | --- | --- |
-| Base | Hostname, network, DNS, locale, timezones, APT sources, packages | Planner available; apply pending |
+| Base | Hostname, network, DNS, locale, timezones, APT sources, packages | Host preflight and exact file plan available; apply pending |
 | MOTD | [Debian Server Info MOTD](https://github.com/RzandAl/debian-server-info-motd) through its native installer | Pinned integration planned |
 | Firewall | Separate, explicit rules and recovery | Future |
 | VPN | Separate VPN installation and configuration | Future |
@@ -120,7 +138,10 @@ python3 bootstrap.py --help
 
 Tests cover malformed and mixed-family IP addresses, the previous oversized
 IPv6-hextet typo, gateway semantics, strict JSON input, disabled IPv6, interface
-discovery, shell-sensitive input, and repeated managed-profile rendering.
+discovery, sudo identity, network includes, both APT source formats, preserved
+third-party content, unsupported migrations, zero target writes, and a second
+plan after a simulated application producing no changed files. An actual
+`ifquery` check runs in Debian CI and is skipped locally if unavailable.
 Network rollback and real VPS installation must pass their own checks before
 an apply-capable release is published.
 
