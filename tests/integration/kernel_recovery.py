@@ -38,7 +38,7 @@ def wait_for(predicate, seconds=20):
 
 
 class Fixture:
-    def __init__(self, timeout=30):
+    def __init__(self, timeout=30, *, ssh_targets=None, preserve_original=False, candidate_preexisting=False):
         require_container()
         self.namespace = "rzandal-test-" + uuid.uuid4().hex[:16]
         self.directory = Path(tempfile.mkdtemp(prefix="rzandal-ci-", dir="/srv"))
@@ -53,10 +53,15 @@ class Fixture:
         self.ip.command(["link", "set", "peer0", "up"])
         self.ip.command(["link", "set", "ens3", "up"])
         self.ip.command(["-4", "address", "add", "192.0.2.10/32", "dev", "ens3"])
+        if candidate_preexisting:
+            self.ip.command(["-4", "address", "add", "198.51.100.20/32", "dev", "ens3"])
         self.ip.command(["-4", "route", "add", "198.51.100.1/32", "dev", "ens3", "scope", "link", "proto", "static"])
         self.ip.command(["-4", "route", "add", "default", "via", "198.51.100.1", "dev", "ens3", "src", "192.0.2.10", "proto", "static"])
         self.ip.command(["-6", "address", "add", "2001:db8:1::10/64", "dev", "ens3"])
         self.ip.command(["-6", "route", "add", "default", "via", "fe80::1", "dev", "ens3", "proto", "static", "metric", "1024"])
+        if ssh_targets is not None:
+            self.ip.command(["-4", "route", "add", "192.0.2.100/32", "dev", "ens3", "scope", "link", "proto", "static"])
+            self.ip.command(["-6", "route", "add", "2001:db8:ffff::100/128", "dev", "ens3", "proto", "static", "metric", "1024"])
         self.before = self.ip.settled()
         before = tx.fingerprint(self.manager.fs.snapshot("/etc/bootstrap-sentinel"))
         after = tx.regular(b"candidate\n", 0o644, 0, 0)
@@ -73,13 +78,16 @@ class Fixture:
             {"action": "add", "object": {"kind": "address", "family": 4, "cidr": "198.51.100.20/32"}},
             {"action": "add", "object": {"kind": "address", "family": 6, "cidr": "2001:db8:2::20/64"}},
             {"action": "add", "object": old_v6_default},
+        ]
+        if not preserve_original:
+            self.operations.extend([
             {"action": "delete", "object": old_default},
             {"action": "add", "object": {**old_default, "src": "198.51.100.20"}},
             {"action": "delete", "object": old_address},
-        ]
+            ])
         self.supervisor = guard.RecoverySupervisor(self.manager)
         self.supervisor.arm(self.run_id, self.report, interface="ens3", namespace=self.namespace,
-                            operations=self.operations, timeout=timeout)
+                            operations=self.operations, timeout=timeout, ssh_targets=ssh_targets)
 
     def applied(self):
         config = self.supervisor.load(self.run_id)

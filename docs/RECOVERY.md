@@ -1,8 +1,9 @@
 # Independent recovery
 
-`0.4.0-dev` adds an internal recovery supervisor and static network journal.
+`0.4.0-dev` added an internal recovery supervisor and static network journal;
+`0.5.0-dev` adds verified fresh SSH acknowledgment for isolated fixtures.
 The bootstrap wizard remains read-only. Production Base application and
-fresh-session acknowledgment are still disabled; there is no bootstrap
+module/probe wiring are still disabled; there is no bootstrap
 `--apply` option or recovery CLI flag that enables them.
 
 ## Independent supervisor
@@ -85,11 +86,14 @@ manager's private socket; its harmless persistent timer stamp is retained
 because the system bus is not yet started. The disabled/removed unit cannot
 schedule another run from that stamp.
 
-The commit API is deliberately limited to fixture roots with an explicit health
-callback. It checks the guard/deadline, final files, and intended network objects
-before recording terminal state and disarming. Real Base still needs a verified
-fresh SSH session tied to the invoking account, module health checks, and the
-temporary IPv6 gateway/external probe. There is no unattended production commit.
+The commit APIs remain limited to fixture roots. A run armed with an SSH contract
+requires a verified new authenticated transport tied to the invoking account and
+candidate address. Its final files, preserved/reused static network objects,
+guard, and deadlines must still be healthy immediately before terminal commit.
+The older fixture callback cannot bypass an SSH contract.
+[Fresh SSH acknowledgment](SSH_ACKNOWLEDGMENT.md) covers the evidence and failure
+cases. Real Base still needs module health and the temporary IPv6 gateway/external
+probe connected to this lifecycle. There is no unattended production commit.
 
 ## Console recovery
 
@@ -102,7 +106,9 @@ sudo python3 -I recovery.py recover <run-id>
 
 The installed private worker exposes `_apply` and `_boot` only for its generated
 units; these operations reject execution from a normal checkout. There is no
-CLI arm/start/commit, arbitrary backup path, or namespace/root override.
+CLI arm/start, arbitrary backup path, or namespace/root override. The `acknowledge`
+operation accepts only an existing configured fixture run; the production system
+root remains gated.
 
 ## Verified scope
 
@@ -118,6 +124,10 @@ client exit, a real worker `SIGKILL` during DAD, fixture commit/timer disarming,
 and an unresolved-run container restart. They verify actual addresses/routes
 and restored original file bytes rather than only command mocks.
 
-This does not establish real VPS/provider reachability, a fresh SSH reconnect,
-the full ifupdown transition, package failure recovery, or a healthy VPS reboot.
+Additional namespace scenarios exercise real OpenSSH IPv4/IPv6 reconnection,
+sudo caller identity without an environment hint, ControlMaster refusal, and
+automatic rollback without a valid acknowledgment.
+
+This does not establish real VPS/provider reachability, the full ifupdown
+transition, package failure recovery, or a healthy VPS reboot.
 Those remain release acceptance checks, not claims derived from fixture success.

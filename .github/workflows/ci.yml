@@ -82,6 +82,9 @@ jobs:
       - name: Test owned network changes and independent recovery
         run: docker exec --workdir /opt/bootstrap rzandal-recovery-ci python3 tests/integration/kernel_recovery.py -v
 
+      - name: Verify fresh SSH acknowledgment with real OpenSSH connections
+        run: docker exec --workdir /opt/bootstrap rzandal-recovery-ci python3 tests/integration/ssh_acknowledgment.py -v
+
       - name: Prepare an unresolved run then restart the system manager
         run: |
           docker exec --workdir /opt/bootstrap rzandal-recovery-ci python3 tests/integration/kernel_recovery.py prepare-boot

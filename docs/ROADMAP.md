@@ -51,13 +51,16 @@ confirmation. A cancelled run leaves target bytes and live networking intact.
 - [x] Restore owned static addresses/main routes, preserve reused objects, and
   verify actual IPv4/IPv6 kernel behavior in isolated namespaces.
 - [ ] Connect production Base to the supervisor after host/probe contracts are ready.
-- [ ] New-session acknowledgment, health checks, and timer disarming.
+- [x] New-session acknowledgment, file/network health checks, and timer disarming
+  for isolated fixtures; real OpenSSH IPv4/IPv6 and sudo/ControlMaster scenarios.
+- [ ] Bind production module health and the completed IPv6 probe to acknowledgment.
 
 The file layer arrived in `0.3.0-dev`; `0.4.0-dev` adds the independent supervisor
-and owned network journal. [Independent recovery](RECOVERY.md) describes the
-Debian/systemd namespace scenarios, manager-restart test, explicit fixture-only
-writer/commit gate, and remaining provider/VPS validation. Production Bootstrap
-apply stays unavailable until its acknowledgment and probe guarantees exist.
+and owned network journal. `0.5.0-dev` adds [fresh SSH acknowledgment](SSH_ACKNOWLEDGMENT.md).
+[Independent recovery](RECOVERY.md) describes the Debian/systemd namespace
+scenarios, manager-restart test, fixture-only writer/commit gate, and remaining
+provider/VPS validation. Production Bootstrap apply stays unavailable until
+probe, module health, and host transition guarantees are connected.
 
 **Acceptance:** a timeout, lost SSH session, failed step, signal, or stale run
 restores both original files and live network state. Reused addresses/routes
