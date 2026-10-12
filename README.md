@@ -9,10 +9,11 @@ backups and recovery.
 
 > **Target platform:** Debian 13 (trixie), with ifupdown networking.
 >
-> **Development status:** `0.2.0-dev` implements a read-only wizard, host preflight,
-> and exact in-memory file candidates with diffs.
-> Applying configuration, installing packages, and installing modules are not
-> implemented yet. No production release is available.
+> **Development status:** `0.3.0-dev` provides a read-only wizard, host preflight,
+> exact file candidates, and an internal durable file-transaction backend.
+> The bootstrap CLI still has no apply option. Automatic network recovery,
+> Base application, packages, and modules remain pending. No production release
+> is available.
 
 ## Highlights
 
@@ -34,6 +35,10 @@ backups and recovery.
 - Produces exact file candidates, metadata, fingerprints, and unified diffs.
 - Preserves unrelated interfaces, third-party repositories, and user content;
   unsupported ownership or migration blocks the entire file plan.
+- Tests private backups, a single-run lock, stale-plan rejection, atomic file
+  replacement, and recovery by a separate process after writer interruption.
+- Preserves external edits during recovery and blocks further runs until an
+  incomplete recovery is resolved.
 
 ## Standard profile
 
@@ -69,8 +74,8 @@ require ifupdown and working CA certificates; the existing MOTD installer needs
 | Planner runtime | Linux, Python 3.11 or newer, installed IANA timezone data |
 | Network profiles | Static IPv4, including `/32`; optional static IPv6 |
 | Local validation | Automated parser, host-audit, preservation, and repeat-planning tests |
-| CI | The same tests plus actual ifupdown parser validation in Debian 13 |
-| Live VPS apply | Pending; no apply implementation exists yet |
+| CI | Planning and file recovery as root and an ordinary user in Debian 13, plus actual ifupdown parsing |
+| Live VPS apply | Pending; internal file writes are not connected to the bootstrap CLI |
 
 The account is detected, not selected or created. `USER`, `LOGNAME`, and `HOME`
 are not account authorities. Consistent `SUDO_UID`, `SUDO_GID`, and `SUDO_USER`
@@ -125,15 +130,17 @@ The profile format and a documentation-address example are in
 
 - [Planning, validation, ownership, recovery, and module contracts](docs/ARCHITECTURE.md)
 - [Implementation milestones and acceptance criteria](docs/ROADMAP.md)
+- [File transaction state, recovery, and current limits](docs/TRANSACTIONS.md)
 - [Continuous integration checks](.github/workflows/ci.yml)
 
 ## Tests and validation
 
-Run the repository-owned checks without root:
+Run the repository-owned checks:
 
 ```sh
 python3 -m unittest discover -s tests -v
 python3 bootstrap.py --help
+python3 transaction.py --help
 ```
 
 Tests cover malformed and mixed-family IP addresses, the previous oversized
@@ -142,6 +149,12 @@ discovery, sudo identity, network includes, both APT source formats, preserved
 third-party content, unsupported migrations, zero target writes, and a second
 plan after a simulated application producing no changed files. An actual
 `ifquery` check runs in Debian CI and is skipped locally if unavailable.
+File-transaction tests cover partial writes, `SIGKILL` before and after atomic
+replacement, recovery by another process, stale files/include inventories/live
+facts, locks, corrupt state, private permissions, preserved metadata, external
+edits, and a healthy second plan with no backups or rewrites. Tests write only
+to isolated temporary roots. Two metadata/integration cases require root and
+are skipped for ordinary users; Debian CI runs both variants.
 Network rollback and real VPS installation must pass their own checks before
 an apply-capable release is published.
 
