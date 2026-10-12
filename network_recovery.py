@@ -150,15 +150,22 @@ class IPBackend:
                 obj["broadcast"] = value["broadcast"]
             items.append(normalized_object(obj, self.interface))
         for family in (4, 6):
-            routes = json.loads(self.command(["-j", f"-{family}", "route", "show", "table", "main", "dev", self.interface]))
+            # iproute2 can omit the device from JSON when it is already supplied
+            # as a filter. Read the main table and select explicit device fields.
+            routes = json.loads(self.command(["-j", f"-{family}", "route", "show", "table", "main"]))
             if not isinstance(routes, list):
                 raise tx.TransactionError("Cannot inspect main-table routes")
             for value in routes:
-                if (not isinstance(value, dict) or value.get("dev") != self.interface
-                        or set(value) - {"dst", "gateway", "dev", "protocol", "scope", "prefsrc", "metric", "flags", "pref", "table", "type"}
+                if not isinstance(value, dict):
+                    raise tx.TransactionError("Malformed route inventory")
+                if value.get("dev") != self.interface:
+                    if any(hop.get("dev") == self.interface for hop in value.get("nexthops", []) if isinstance(hop, dict)):
+                        raise tx.TransactionError("Selected interface participates in a multipath route")
+                    continue
+                if (set(value) - {"dst", "gateway", "dev", "protocol", "scope", "prefsrc", "metric", "flags", "pref", "table", "type"}
                         or value.get("table", "main") not in {"main", 254}
                         or value.get("type", "unicast") != "unicast" or set(value.get("flags", [])) - {"onlink"}):
-                    raise tx.TransactionError("Complex or dynamic route requires another backend")
+                    raise tx.TransactionError("Complex or dynamic route requires another backend; attributes: " + ", ".join(sorted(value)))
                 obj = {"kind": "route", "family": family, "dst": value.get("dst", "default"),
                        "protocol": value.get("protocol", "boot"), "scope": value.get("scope", "global"),
                        "metric": value.get("metric", 1024 if family == 6 else 0), "onlink": "onlink" in value.get("flags", [])}
