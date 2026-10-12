@@ -144,8 +144,11 @@ class IPBackend:
             if value.get("label", self.interface) != self.interface:
                 raise tx.TransactionError("Address aliases require another backend")
             obj = {"kind": "address", "family": family, "cidr": f"{value['local']}/{value['prefixlen']}"}
-            if "peer" in value:
-                obj["peer"] = value["peer"] if "/" in value["peer"] else value["peer"] + "/32"
+            peer = value.get("peer", value.get("address"))
+            # iproute2's JSON uses 'address' for IFA_ADDRESS when it differs from
+            # IFA_LOCAL, while its text output calls the same value 'peer'.
+            if peer is not None and peer != value["local"]:
+                obj["peer"] = peer if "/" in peer else peer + "/32"
             if "broadcast" in value:
                 obj["broadcast"] = value["broadcast"]
             items.append(normalized_object(obj, self.interface))
