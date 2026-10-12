@@ -84,12 +84,17 @@ PermitUserEnvironment no
     def command(self, command, *, user="root", target="198.51.100.20", control=None):
         arguments = self.arguments(user, target)
         arguments[-1:-1] = ["-S", str(control) if control else "none", "-o", "ControlMaster=no"]
+        if control:
+            # A refused/missing multiplex channel must not fall back to a new
+            # TCP transport and turn this refusal scenario into a fresh login.
+            arguments[-1:-1] = ["-o", "ProxyCommand=/bin/false"]
         return run([*arguments, command])
 
     def master(self, target="198.51.100.20"):
         control = self.directory / ("control-" + uuid.uuid4().hex[:8])
         arguments = self.arguments("root", target)
-        arguments[-1:-1] = ["-S", str(control), "-o", "ControlMaster=yes", "-MNf"]
+        # -M after ControlMaster=yes toggles it to the interactive 'ask' mode.
+        arguments[-1:-1] = ["-S", str(control), "-o", "ControlMaster=yes", "-Nf"]
         result = run(arguments)
         if result.returncode:
             raise AssertionError(result.stderr)
