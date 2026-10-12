@@ -78,11 +78,12 @@ on an incomplete recovery, corrupt state, or a held lock. A conflict requires
 manual review: restore the desired original or matching candidate, then retry
 recovery. Do not delete the active pointer to bypass an unresolved run.
 
-These commands restore files only. They cannot bring back a lost SSH route.
-An independent systemd service/timer, a protected worker bundle, boot recovery,
-live-network rollback, and a fresh SSH acknowledgment are still required before
-Base is connected to this backend. No unattended timeout recovery or reboot
-guarantee is claimed in this build.
+These commands restore files only. A supervised run deliberately refuses bare
+file recovery or commit: use `recovery.py recover <run-id>` for its coordinated
+file/network lifecycle. The independent supervisor, protected bundle, timer,
+and owned-network journal were added in `0.4.0-dev`; see
+[Independent recovery](RECOVERY.md). Fresh SSH acknowledgment and production
+Base wiring remain pending. No VPS reboot guarantee is claimed in this build.
 
 ## Verification
 
@@ -98,4 +99,5 @@ backend and verifies that the next plan is unchanged.
 Debian 13 CI runs the suite both as root and as `nobody`. The root variant also
 checks restoration of a different user/group and the actual planner's system
 metadata. These checks do not substitute for namespace and disposable-VPS
-validation of network transition, automatic rollback, and reboot.
+validation of the production network transition and reboot. The supervisor's
+own kernel/systemd tests run separately, as described in the recovery guide.
