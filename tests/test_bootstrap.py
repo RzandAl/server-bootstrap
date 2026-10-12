@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -33,7 +34,7 @@ EXAMPLE = {
 
 class ProfileTests(unittest.TestCase):
     def profile(self, **changes):
-        return app.Profile.from_dict({**EXAMPLE, **changes})
+        return app.Profile.from_dict({**EXAMPLE, **changes}, current_user="razis")
 
     def test_previous_ipv6_typo_is_rejected(self):
         with self.assertRaisesRegex(app.ValidationError, "invalid IPv6"):
@@ -120,7 +121,7 @@ class ProfileTests(unittest.TestCase):
 
     def test_planning_is_repeatable_and_does_not_mutate_input(self):
         original = copy.deepcopy(EXAMPLE)
-        profile = app.Profile.from_dict(EXAMPLE)
+        profile = app.Profile.from_dict(EXAMPLE, current_user="razis")
         first = app.build_plan(profile)
         self.assertEqual(first, app.build_plan(profile))
         self.assertEqual(EXAMPLE, original)
@@ -208,9 +209,14 @@ class DiscoveryTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(app, "invoking_account", return_value=SimpleNamespace(pw_name="razis", pw_dir="/home/razis"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_wizard_reprompts_invalid_ipv6_before_producing_plan(self):
         defaults = {**EXAMPLE, "ipv6_enabled": False}
-        answers = ["", "", "", "", "", "y", "22a12::2/64", "2001:db8:1234::2/64", "", "", ""]
+        answers = ["", "", "", "", "y", "22a12::2/64", "2001:db8:1234::2/64", "", "", ""]
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch.object(app, "detect_defaults", return_value=defaults), \
                 mock.patch.object(app.Path, "is_dir", return_value=True), \
@@ -222,7 +228,7 @@ class CliTests(unittest.TestCase):
 
     def test_changing_interface_does_not_reuse_other_interfaces_addresses(self):
         defaults = copy.deepcopy(EXAMPLE)
-        answers = ["", "ens4", "", "203.0.113.10/24", "203.0.113.1", "n", "", "n"]
+        answers = ["", "ens4", "203.0.113.10/24", "203.0.113.1", "n", "", "n"]
         with mock.patch.object(app, "detect_defaults", return_value=defaults), \
                 mock.patch.object(app.Path, "is_dir", return_value=True), \
                 mock.patch("builtins.input", side_effect=answers), \
