@@ -9,11 +9,11 @@ backups and recovery.
 
 > **Target platform:** Debian 13 (trixie), with ifupdown networking.
 >
-> **Development status:** `0.3.0-dev` provides a read-only wizard, host preflight,
-> exact file candidates, and an internal durable file-transaction backend.
-> The bootstrap CLI still has no apply option. Automatic network recovery,
-> Base application, packages, and modules remain pending. No production release
-> is available.
+> **Development status:** `0.4.0-dev` provides read-only planning, durable file
+> transactions, and an internal systemd/network recovery backend.
+> Detached writes and acknowledgment are enabled only for isolated test roots.
+> Production Base apply, fresh SSH acknowledgment, IPv6 connectivity probes,
+> packages, and modules remain pending. No production release is available.
 
 ## Highlights
 
@@ -39,6 +39,8 @@ backups and recovery.
   replacement, and recovery by a separate process after writer interruption.
 - Preserves external edits during recovery and blocks further runs until an
   incomplete recovery is resolved.
+- Arms protected worker bundles, independent rollback deadlines, and early-boot
+  file restoration; journals owned static address/main-route changes.
 
 ## Standard profile
 
@@ -74,7 +76,7 @@ require ifupdown and working CA certificates; the existing MOTD installer needs
 | Planner runtime | Linux, Python 3.11 or newer, installed IANA timezone data |
 | Network profiles | Static IPv4, including `/32`; optional static IPv6 |
 | Local validation | Automated parser, host-audit, preservation, and repeat-planning tests |
-| CI | Planning and file recovery as root and an ordinary user in Debian 13, plus actual ifupdown parsing |
+| CI | Debian 13 regressions as root/user, ifupdown/systemd parsing, and isolated kernel/systemd recovery scenarios |
 | Live VPS apply | Pending; internal file writes are not connected to the bootstrap CLI |
 
 The account is detected, not selected or created. `USER`, `LOGNAME`, and `HOME`
@@ -131,6 +133,7 @@ The profile format and a documentation-address example are in
 - [Planning, validation, ownership, recovery, and module contracts](docs/ARCHITECTURE.md)
 - [Implementation milestones and acceptance criteria](docs/ROADMAP.md)
 - [File transaction state, recovery, and current limits](docs/TRANSACTIONS.md)
+- [Independent systemd recovery and owned network changes](docs/RECOVERY.md)
 - [Continuous integration checks](.github/workflows/ci.yml)
 
 ## Tests and validation
@@ -141,6 +144,7 @@ Run the repository-owned checks:
 python3 -m unittest discover -s tests -v
 python3 bootstrap.py --help
 python3 transaction.py --help
+python3 -I recovery.py --help
 ```
 
 Tests cover malformed and mixed-family IP addresses, the previous oversized
@@ -155,8 +159,12 @@ facts, locks, corrupt state, private permissions, preserved metadata, external
 edits, and a healthy second plan with no backups or rewrites. Tests write only
 to isolated temporary roots. Two metadata/integration cases require root and
 are skipped for ordinary users; Debian CI runs both variants.
-Network rollback and real VPS installation must pass their own checks before
-an apply-capable release is published.
+The supervisor requires a working system manager and system D-Bus; collection
+never installs these prerequisites. A separate CI job runs an isolated Debian
+systemd container with namespace IPv4/IPv6 changes, timer recovery after client
+exit, worker `SIGKILL`, timer disarming, `/24` and `/32` peer restoration, and
+early-boot recovery after manager restart. Real VPS connectivity and reboot
+validation remain necessary before an apply-capable release is published.
 
 ## Maintainers
 

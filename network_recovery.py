@@ -108,7 +108,7 @@ class IPBackend:
         result = subprocess.run([*prefix, *arguments], capture_output=True, text=True, timeout=10,
                                 check=False, env={"PATH": SYSTEM_PATH, "LC_ALL": "C"})
         if result.returncode:
-            raise tx.RecoveryError("ip failed: " + result.stderr.strip())
+            raise tx.RecoveryError("ip failed " + json.dumps(arguments) + ": " + result.stderr.strip())
         return result.stdout
 
     def snapshot(self, *, allow_dad: bool = False) -> dict[str, Any]:
@@ -254,7 +254,7 @@ class NetworkJournal:
                     projected.pop(key)
         self.manager._save(self.path, {"schema_version": 1, "run_id": self.run_id,
                            "interface": self.backend.interface, "namespace": self.backend.namespace,
-                           "before": before, "operations": entries, "phase": "prepared"})
+                           "before": before, "operations": entries, "implicit_routes": [], "phase": "prepared"})
 
     def load(self) -> dict[str, Any]:
         data = self.manager._load(self.path)
@@ -280,6 +280,12 @@ class NetworkJournal:
                     or not isinstance(entry["phase"], str) or entry["phase"] not in {"pending", "intent", "done", "undone"}
                     or normalized_object(entry["object"], self.backend.interface) != entry["object"]):
                 raise tx.TransactionError("Invalid journaled network operation")
+        for entry in data.get("implicit_routes", []):
+            if (not isinstance(entry, dict) or set(entry) != {"object", "phase"}
+                    or entry["phase"] not in {"intent", "present", "removed", "restored"}
+                    or normalized_object(entry["object"], self.backend.interface) != entry["object"]
+                    or entry["object"].get("kind") != "route" or entry["object"].get("protocol") == "kernel"):
+                raise tx.TransactionError("Invalid implicit route ownership")
         return data
 
     def current(self, data: dict[str, Any]) -> dict[tuple[Any, ...], dict[str, Any]]:
@@ -305,7 +311,11 @@ class NetworkJournal:
                 raise tx.StalePlan("Network object changed before mutation")
             entry["phase"] = "intent"
             self.manager._save(self.path, data)
+            if entry["action"] == "delete" and entry["object"]["kind"] == "address":
+                self.record_route_dependencies(data)
             self.backend.mutate(entry["action"], entry["object"])
+            if entry["action"] == "delete" and entry["object"]["kind"] == "address":
+                self.record_route_outcome(data)
             expected = entry["object"] if entry["action"] == "add" else None
             if self.current(data).get(identity(entry["object"])) != expected:
                 raise tx.RecoveryError("Network command did not produce its expected state")
@@ -314,6 +324,52 @@ class NetworkJournal:
         self.verify_result(data)
         data["phase"] = "applied"
         self.manager._save(self.path, data)
+
+    def record_route_dependencies(self, data: dict[str, Any]) -> None:
+        """The kernel can remove manual routes when an interface loses its last IP.
+
+        Claim this possible side effect BEFORE our address deletion, but only for
+        exact originals still present now. Never claim an already missing route.
+        """
+        current = self.current(data)
+        dependencies = data.setdefault("implicit_routes", [])
+        recorded = {identity(entry["object"]): entry for entry in dependencies}
+        for obj in data["before"]["objects"]:
+            if (obj["kind"] == "route" and obj["protocol"] != "kernel"
+                    and current.get(identity(obj)) == obj):
+                if identity(obj) in recorded:
+                    recorded[identity(obj)]["phase"] = "intent"
+                else:
+                    dependencies.append({"object": obj, "phase": "intent"})
+        self.manager._save(self.path, data)
+
+    def record_route_outcome(self, data: dict[str, Any]) -> None:
+        current = self.current(data)
+        for entry in data.get("implicit_routes", []):
+            if entry["phase"] == "intent":
+                observed = current.get(identity(entry["object"]))
+                entry["phase"] = "removed" if observed is None else "present"
+        self.manager._save(self.path, data)
+
+    def restore_route_dependencies(self, data: dict[str, Any]) -> list[str]:
+        failures = []
+        for entry in sorted(data.get("implicit_routes", []), key=lambda entry: "gateway" in entry["object"]):
+            if entry["phase"] == "present":
+                continue  # Survived our deletion; a later disappearance is external.
+            try:
+                obj = entry["object"]
+                current = self.current(data).get(identity(obj))
+                if current != obj:
+                    if current is not None or entry["phase"] == "restored":
+                        raise tx.RecoveryError("External route change preserved for manual review")
+                    self.backend.mutate("add", obj)
+                    if self.current(data).get(identity(obj)) != obj:
+                        raise tx.RecoveryError("Implicitly removed original route was not restored")
+                entry["phase"] = "restored"
+                self.manager._save(self.path, data)
+            except (tx.TransactionError, OSError, ValueError, subprocess.SubprocessError) as error:
+                failures.append(str(error))
+        return failures
 
     def recover_locked(self, *, boot: bool = False) -> None:
         data = self.load()
@@ -335,7 +391,11 @@ class NetworkJournal:
         ordered = [entry for entry in reversed_entries if entry["object"]["kind"] == "address" and entry["action"] == "add"]
         ordered += [entry for entry in reversed_entries if entry["object"]["kind"] == "address" and entry["action"] == "delete"]
         ordered += [entry for entry in reversed_entries if entry["object"]["kind"] == "route"]
+        routes_restored = False
         for entry in ordered:
+            if entry["object"]["kind"] == "route" and not routes_restored:
+                failures.extend(self.restore_route_dependencies(data))
+                routes_restored = True
             if not entry["owned"] or entry["phase"] in {"pending", "undone"}:
                 continue
             try:
@@ -345,13 +405,19 @@ class NetworkJournal:
                 if current != original:
                     if current != candidate:
                         raise tx.RecoveryError("External network change preserved for manual review")
+                    if entry["action"] == "add" and entry["object"]["kind"] == "address":
+                        self.record_route_dependencies(data)
                     self.backend.mutate("delete" if entry["action"] == "add" else "add", entry["object"])
+                    if entry["action"] == "add" and entry["object"]["kind"] == "address":
+                        self.record_route_outcome(data)
                     if self.current(data).get(identity(entry["object"])) != original:
                         raise tx.RecoveryError("Network restoration did not produce its expected state")
                 entry["phase"] = "undone"
                 self.manager._save(self.path, data)
             except (tx.TransactionError, OSError, ValueError, subprocess.SubprocessError) as error:
                 failures.append(str(error))
+        if not routes_restored:
+            failures.extend(self.restore_route_dependencies(data))
         try:
             current = self.current(data)
             if any(current.get(identity(obj)) != obj for obj in data["before"]["objects"]):
