@@ -7,18 +7,28 @@
 - [x] Typed profile with strict full-address validation and canonical IP output.
 - [x] Read-only interactive collection and text/JSON plan.
 - [x] SSH-route/default-route interface discovery without ambiguous address guesses.
-- [x] Basic local prerequisite observations, explicitly distinct from full preflight.
+- [x] Invoking-account policy, including consistent sudo identity and passwd home.
+- [x] Read-only host audit and exact file candidates/diffs for the supported static ifupdown subset.
+- [x] APT normalization across legacy/deb822 input with third-party preservation.
+- [x] File and include-inventory fingerprints for future stale-plan checks.
 - [x] Pure managed `.profile` timezone renderer with repeated-run checks.
 - [x] Automated tests and a Debian 13 CI workflow.
 
 This build deliberately has no apply option and is not a production release.
 
-## 1. Complete host preflight and staged file plan
+## 1. Host preflight and staged file plan — implemented for the supported subset
 
-Inspect Debian 13, existing account and home, available `C.UTF-8`, prerequisites,
-network managers, cloud-init, resolver ownership, includes, and all active APT
-sources. Keep unsupported migrations explicit. Finalize legacy-list versus
-deb822 output and the exact IPv4 `/32` route method.
+The audit inspects Debian 13, invoking account/home, C.UTF-8, prerequisites,
+services, cloud-init presence, resolver ownership, live addresses/routes/rules,
+ifupdown includes, APT sources, and startup-file conflicts. Unsupported
+migrations block the entire file plan. Canonical APT output is the minimal
+legacy list; `/32` network candidates use `pointopoint` and `gateway`.
+
+Fixture tests verify preservation and repeatability; Debian CI additionally
+uses the real ifupdown parser. Kernel/provider routing and the full effect of
+global hooks/environment sources still need validation before apply.
+Collection and file preparation are complete for this subset. The one final
+confirmation becomes effective only when the transaction engine exists.
 
 **Acceptance:** collect and stage without target changes; reject unsupported
 ownership; preserve unrelated fragments; show exact file changes, package

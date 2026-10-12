@@ -14,6 +14,7 @@ from pathlib import Path
 import pwd
 import re
 import socket
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -24,7 +25,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 SYSTEM_LOCALE = "C.UTF-8"
 SYSTEM_TIMEZONE = "UTC"
 DEFAULT_USER_TIMEZONE = "Europe/Moscow"
-DEFAULT_USER = "razis"
 DEFAULT_INTERFACE = "ens3"
 DNS_IPV4 = ("1.1.1.1", "9.9.9.10")
 DNS_IPV6 = ("2606:4700:4700::1111",)
@@ -49,6 +49,33 @@ PROFILE_KEYS = {
 
 class ValidationError(ValueError):
     """A configuration value cannot be used in a bootstrap plan."""
+
+
+def invoking_account() -> pwd.struct_passwd:
+    """Resolve the real caller from passwd, including a consistent sudo identity.
+
+    USER, LOGNAME and HOME are not account authorities. Sudo metadata is used
+    only by a root process and must agree with the passwd entry for SUDO_UID.
+    """
+    uid = os.getuid()
+    if os.geteuid() == 0 and any(key in os.environ for key in ("SUDO_UID", "SUDO_USER", "SUDO_GID")):
+        raw_uid = os.environ.get("SUDO_UID", "")
+        raw_gid = os.environ.get("SUDO_GID", "")
+        if not re.fullmatch(r"[0-9]+", raw_uid) or not re.fullmatch(r"[0-9]+", raw_gid):
+            raise ValidationError("user: incomplete or invalid sudo identity")
+        uid = int(raw_uid)
+        try:
+            account = pwd.getpwuid(uid)
+        except KeyError as error:
+            raise ValidationError("user: sudo caller does not exist in passwd") from error
+        if account.pw_name != os.environ.get("SUDO_USER") or account.pw_gid != int(raw_gid):
+            raise ValidationError("user: sudo identity does not match passwd")
+    try:
+        account = pwd.getpwuid(uid)
+    except KeyError as error:
+        raise ValidationError("user: invoking UID does not exist in passwd") from error
+    validate_user(account.pw_name)
+    return account
 
 
 def text_value(value: Any, name: str) -> str:
@@ -151,7 +178,7 @@ class Profile:
     motd: bool
 
     @classmethod
-    def from_dict(cls, values: Any) -> Profile:
+    def from_dict(cls, values: Any, *, current_user: str | None = None) -> Profile:
         if not isinstance(values, dict):
             raise ValidationError("profile: expected a JSON object")
         unknown = set(values) - PROFILE_KEYS
@@ -180,9 +207,12 @@ class Profile:
                 raise ValidationError("ipv6_gateway: gateway cannot be the VPS address")
         elif values.get("ipv6_cidr") is not None or values.get("ipv6_gateway") is not None:
             raise ValidationError("ipv6_enabled: disabled IPv6 must not retain address or gateway values")
+        user = validate_user(current_user if current_user is not None else invoking_account().pw_name)
+        if "user" in values and validate_user(values["user"]) != user:
+            raise ValidationError("user: saved profile must match the invoking account; another account cannot be selected")
         return cls(
             validate_hostname(values["hostname"]), validate_interface(values["interface"]),
-            validate_user(values.get("user", DEFAULT_USER)), str(ipv4), str(gateway4),
+            user, str(ipv4), str(gateway4),
             ipv6_enabled, str(ipv6) if ipv6 else None, str(gateway6) if gateway6 else None,
             validate_timezone(values.get("user_timezone", DEFAULT_USER_TIMEZONE)),
             boolean_value(values.get("motd", True), "motd"),
@@ -212,7 +242,7 @@ def build_plan(profile: Profile) -> dict[str, Any]:
             "dns": list(DNS_IPV4 + (DNS_IPV6 if profile.ipv6_enabled else ())),
             "locale": SYSTEM_LOCALE, "system_timezone": SYSTEM_TIMEZONE,
             "user_timezone": profile.user_timezone,
-            "account_policy": "existing-account",
+            "account_policy": "invoking-account",
             "apt_sources": list(APT_SOURCES),
             "packages": list(BASE_PACKAGES),
         },
@@ -228,7 +258,7 @@ def build_plan(profile: Profile) -> dict[str, Any]:
             f"~{profile.user}/.profile", "/etc/apt/sources.list",
         ],
         "required_before_apply": [
-            "Inspect Debian version, existing account, network and DNS ownership, and APT sources.",
+            "Inspect Debian version, invoking account, network and DNS ownership, and APT sources.",
             "Stage exact file changes and show the complete plan with one Apply? [y/N] confirmation.",
             "Back up changed files and arm an independent network rollback timer.",
             "Probe selected IPv6 after confirmation; clean up temporary state on every exit path.",
@@ -259,8 +289,12 @@ def merge_profile_timezone(original: str, timezone: str) -> str:
 def read_ip_json(arguments: list[str]) -> list[dict[str, Any]]:
     """Run only read-only iproute2 queries, without shell evaluation."""
     try:
+        executable = shutil.which("ip", path="/usr/sbin:/usr/bin:/sbin:/bin")
+        if executable is None:
+            return []
         result = subprocess.run(
-            ["ip", "-j", *arguments], check=True, capture_output=True, text=True, timeout=5,
+            [executable, "-j", *arguments], check=True, capture_output=True, text=True, timeout=5,
+            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
         )
         value = json.loads(result.stdout)
         return [entry for entry in value if isinstance(entry, dict)] if isinstance(value, list) else []
@@ -293,7 +327,7 @@ def detect_defaults() -> dict[str, Any]:
                 chosen = interfaces[0]
     values: dict[str, Any] = {
         "schema_version": 1, "hostname": socket.gethostname().split(".")[0],
-        "interface": chosen or "", "user": DEFAULT_USER, "ipv4_cidr": "",
+        "interface": chosen or "", "user": invoking_account().pw_name, "ipv4_cidr": "",
         "ipv4_gateway": "", "ipv6_enabled": False, "ipv6_cidr": None,
         "ipv6_gateway": None, "user_timezone": DEFAULT_USER_TIMEZONE, "motd": True,
     }
@@ -311,34 +345,6 @@ def detect_defaults() -> dict[str, Any]:
         if len(gateways) == 1:
             values[f"ipv{family}_gateway"] = gateways.pop()
     return values
-
-
-def inspect_target(profile: Profile) -> list[str]:
-    """Report prerequisite observations, never claiming that connectivity was tested."""
-    notes = []
-    try:
-        release = dict(line.split("=", 1) for line in Path("/etc/os-release").read_text().splitlines()
-                       if "=" in line and not line.startswith("#"))
-        if release.get("ID", "").strip('"') != "debian" or release.get("VERSION_ID", "").strip('"') != "13":
-            notes.append("Target is outside Debian 13; this is a preview only.")
-    except OSError:
-        notes.append("Cannot inspect /etc/os-release.")
-    if not Path("/sys/class/net", profile.interface).is_dir():
-        notes.append(f"Interface {profile.interface} does not exist on this host.")
-    try:
-        pwd.getpwnam(profile.user)
-    except KeyError:
-        notes.append(f"Account {profile.user} does not exist; account creation is outside the current scope.")
-    if Path("/etc/cloud/cloud.cfg").exists():
-        notes.append("cloud-init is present; ownership of hostname and networking requires review.")
-    if Path("/etc/resolv.conf").is_symlink():
-        notes.append("/etc/resolv.conf is a symlink; identify its owner before using static DNS.")
-    for manager in ("systemd/network", "NetworkManager"):
-        path = Path("/etc", manager)
-        if path.is_dir() and any(path.iterdir()):
-            notes.append(f"Configuration exists in {path}; a network-manager ownership audit is required.")
-    notes.append("No address was added; no DAD, gateway or external-connectivity probe was performed.")
-    return notes
 
 
 def ask(label: str, default: Any, validator: Callable[[str], Any]) -> Any:
@@ -366,6 +372,8 @@ def ask_yes_no(label: str, default: bool) -> bool:
 
 def collect_profile() -> Profile:
     values = detect_defaults()
+    account = invoking_account()
+    values["user"] = account.pw_name
     detected_interface = values["interface"]
     print("RzandAl Server Bootstrap — planning preview\nNo system changes are made.\n")
     values["hostname"] = ask("Hostname (short name)", values["hostname"], validate_hostname)
@@ -375,7 +383,7 @@ def collect_profile() -> Profile:
     # Do not reuse another interface's detected addresses or gateways.
     if values["interface"] != detected_interface:
         values.update({"ipv4_cidr": "", "ipv4_gateway": "", "ipv6_cidr": None, "ipv6_gateway": None})
-    values["user"] = ask("Existing account", values["user"], validate_user)
+    print(f"User timezone target: {account.pw_name} ({account.pw_dir})")
     values["ipv4_cidr"] = str(ask("IPv4/CIDR", values["ipv4_cidr"], lambda v: parse_cidr(v, 4, "ipv4_cidr")))
     values["ipv4_gateway"] = str(ask("IPv4 gateway", values["ipv4_gateway"], lambda v: parse_address(v, 4, "ipv4_gateway")))
     values["ipv6_enabled"] = ask_yes_no("Configure static IPv6?", False)
@@ -386,14 +394,14 @@ def collect_profile() -> Profile:
         values.update({"ipv6_cidr": None, "ipv6_gateway": None})
     values["user_timezone"] = ask("User timezone", values["user_timezone"], validate_timezone)
     values["motd"] = ask_yes_no("Install RzandAl Debian Server Info MOTD?", True)
-    return Profile.from_dict(values)
+    return Profile.from_dict(values, current_user=account.pw_name)
 
 
 def format_plan(plan: dict[str, Any]) -> str:
     base = plan["base"]
     lines = ["Base:"]
     for label, key in (
-        ("Hostname", "hostname"), ("Interface", "interface"), ("Existing user", "user"),
+        ("Hostname", "hostname"), ("Interface", "interface"), ("Invoking user", "user"),
         ("IPv4", "ipv4"), ("IPv4 gateway", "ipv4_gateway"), ("IPv6", "ipv6"),
         ("IPv6 gateway", "ipv6_gateway"), ("Locale", "locale"),
         ("System TZ", "system_timezone"), ("User TZ", "user_timezone"),
@@ -426,7 +434,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--config", type=Path, help="validate and preview a JSON profile")
     parser.add_argument("--json", action="store_true", help="emit the plan as JSON (requires --config)")
-    parser.add_argument("--inspect", action="store_true", help="also report read-only local prerequisite observations")
+    parser.add_argument("--inspect", action="store_true", help="run read-only host preflight and show exact file changes")
+    parser.add_argument("--diff", action="store_true", help="show unified file diffs (implies --inspect)")
     args = parser.parse_args(argv)
     if args.json and not args.config:
         parser.error("--json requires --config to keep stdout machine-readable")
@@ -439,15 +448,17 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValidationError("an interactive terminal or --config is required")
             profile = collect_profile()
         plan = build_plan(profile)
-        if args.inspect:
-            plan["target_observations"] = inspect_target(profile)
+        if args.inspect or args.diff:
+            from preflight import prepare_host_plan
+            plan["host_plan"] = prepare_host_plan(profile, invoking_account(), plan, merge_profile_timezone)
         if args.json:
             print(json.dumps(plan, indent=2, ensure_ascii=False))
         else:
             print(format_plan(plan))
-            for note in plan.get("target_observations", []):
-                print(f"Observation: {note}")
-        return 0
+            if "host_plan" in plan:
+                from preflight import format_host_plan
+                print(format_host_plan(plan["host_plan"], show_diff=args.diff))
+        return 2 if plan.get("host_plan", {}).get("blockers") else 0
     except (ValidationError, OSError, ValueError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 2

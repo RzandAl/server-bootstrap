@@ -1,8 +1,8 @@
 # Planning and architecture
 
 This is the working design for the apply-capable first release. The current
-`0.1.0-dev` build implements collection, validation, planning, and a pure
-managed-profile renderer only. None of the apply procedures below runs yet.
+`0.2.0-dev` build implements collection, validation, read-only host preflight,
+and exact in-memory file candidates. None of the apply procedures below runs yet.
 
 ## Scope
 
@@ -12,8 +12,13 @@ Base and MOTD. Firewall and VPN remain later milestones.
 
 We standardize server configuration without combining user provisioning,
 SSH hardening, firewall rules, or VPN installation into the base operation.
-The named account must already exist. We never infer sudo access or copy SSH
-keys from root merely because the account name was entered.
+User settings target the invoking account. Direct execution uses the real UID;
+a root process with sudo metadata resolves `SUDO_UID` through passwd and checks
+`SUDO_USER` and `SUDO_GID` against it. Inconsistent or incomplete metadata is
+rejected. An unprivileged process cannot select another account using these
+variables. Direct root execution targets root. The passwd home is used instead
+of `HOME`; no account-selection question, user creation, key copying, or sudo
+permission changes are part of Base.
 
 ## Workflow
 
@@ -51,6 +56,9 @@ version is independent of the project release version. Unknown fields,
 duplicate keys, strings in boolean fields, and stale disabled-IPv6 values are
 rejected.
 
+The optional legacy `user` field is an assertion about the invoking account,
+not an override. A mismatch fails validation. Omit it for reusable profiles.
+
 Example with documentation addresses only:
 
 ```json
@@ -58,7 +66,6 @@ Example with documentation addresses only:
   "schema_version": 1,
   "hostname": "rzandal-host-edge",
   "interface": "ens3",
-  "user": "razis",
   "ipv4_cidr": "192.0.2.10/32",
   "ipv4_gateway": "198.51.100.1",
   "ipv6_enabled": true,
@@ -85,7 +92,7 @@ Validation has three distinct layers:
 | Layer | Checks | Current status |
 | --- | --- | --- |
 | Value validation | Short hostname, Linux interface name, account name, complete IP parser, numeric prefixes, address families, known timezone | Implemented |
-| Host eligibility | Debian 13, existing interface/account, available tools and locale, ownership of network/DNS/APT | Basic observations only; full preflight pending |
+| Host eligibility | Debian 13, invoking account/home, prerequisites, locale, live interface/routes, network/DNS/APT ownership | Implemented for the supported static ifupdown subset; unsupported migrations blocked |
 | Connectivity | DAD, gateway routing, external reachability, new SSH session | Pending; never inferred from valid syntax |
 
 `ipaddress` rejects the previous `22a12:...` typo because an IPv6 hextet may not
@@ -124,7 +131,10 @@ Multiple addresses or gateways remain explicit choices rather than guesses.
 For IPv4 `/32` with an off-link gateway, the final backend must install an
 explicit reachable route to that gateway or a verified equivalent provider
 configuration before the default route. The planner identifies this case;
-the actual ifupdown method is pending namespace and VPS validation.
+the staged `/32` candidate uses ifupdown `pointopoint` before `gateway`.
+Debian CI validates its syntax with `ifquery`; actual kernel behavior remains
+pending namespace and VPS validation. Other off-link IPv4 prefixes and global
+off-link IPv6 gateways block staging.
 
 Do not run a blind `systemctl restart networking` over SSH. Plan the exact
 transition with rollback and preserve the route carrying the current session
@@ -168,12 +178,13 @@ The system uses `C.UTF-8` and `UTC`. Do not generate extra locales or make
 category overrides, including the earlier `LC_TIME=ru_RU.UTF-8`, so unsupported
 old settings cannot survive unnoticed.
 
-The selected account gets a single managed `export TZ=Europe/Moscow` block in
+The invoking account gets a single managed `export TZ=Europe/Moscow` block in
 its real home directory's `.profile`. Preserve unrelated content and ownership.
 The pure renderer already replaces its own block without appending duplicates
-and rejects malformed markers. It does not write files yet. Preflight must
-report conflicting existing `TZ` assignments or a `.bash_profile` that bypasses
-`.profile`. This setting governs that account's login-shell environment; it
+and rejects malformed markers. It does not write files yet. Preflight conservatively
+blocks unmanaged `TZ`, `LANG`, `LANGUAGE`, or `LC_*` assignments in inspected
+startup files, and an existing `.bash_profile` or `.bash_login` under Bash.
+It preserves those files for explicit review rather than guessing shell flow. This setting governs that account's login-shell environment; it
 does not change service or cron timezones.
 
 Keep `/etc/hostname` and local hostname resolution in `/etc/hosts` consistent,
@@ -186,13 +197,15 @@ The starting profile uses the three explicit `trixie`, `trixie-security`, and
 the components observed in our recent Debian installation. Source indexes,
 backports, `contrib`, and `non-free` are not added.
 
-The initial planned destination remains `/etc/apt/sources.list`. Preflight must
-also parse `.list` and deb822 `.sources` files in `/etc/apt/sources.list.d`, so
-official sources are normalized without duplication. Preserve third-party
-entries unless a precise, reviewed migration requires otherwise. APT now
-recommends deb822 for new source files; choosing a canonical deb822 destination
-is an open implementation decision, not an automatic format migration in this
-planning build.
+The canonical destination is `/etc/apt/sources.list`, matching the agreed
+minimal base scheme. Preflight parses active `.list` and deb822 `.sources`
+files, removes the standard Debian binary/source entries from their old
+locations, and emits one managed block with the three binary sources.
+Third-party entries, comments outside removed source paragraphs, and disabled
+deb822 paragraphs are preserved. Mixed official/third-party URI paragraphs,
+nonstandard Debian suites, malformed entries, source symlinks, and custom APT
+source-path overrides require review and block the file plan. The still-supported
+legacy-list format is a deliberate project choice; deb822 input is supported.
 
 Use `apt-get update` and `apt-get install` in the apply engine. Installing
 missing selected packages is naturally repeatable; do not upgrade the entire
@@ -229,11 +242,42 @@ missing or modified managed files follow the native repair lifecycle.
 OpenSSH `PrintLastLog` management must stay unselected unless it appears
 explicitly in the collected plan.
 
+## Current host-plan coverage
+
+`--inspect` invokes the read-only audit; `--diff` additionally displays unified
+diffs. JSON includes exact candidates, file types, ownership/mode, content
+hashes, and inode/mtime fingerprints of inspected files. Included directories
+and glob results are recorded too, so a future apply can detect newly added
+fragments. No staging directory, backup, package operation, hook, service
+restart, address addition, DAD test, or external probe runs in this version.
+
+The supported subset is Debian 13, active ifupdown, one plain Ethernet primary
+interface, simple static/manual stanzas, and an unmanaged regular resolver.
+The audit follows bounded relative/absolute `source` and `source-directory`
+includes with Debian's filename filtering. It preserves other interfaces and
+retains supported MTU, metric, and MAC options for the selected interface.
+
+Cycles/repeated includes, symlinks, duplicate address stanzas, mappings,
+renames, lifecycle hooks in the selected stanza, templates, inline comments,
+continuations, DHCP/SLAAC, cloud-init presence, custom policy rules, active
+alternate managers, resolver lifecycle packages, and unsafe file types block
+staging. Cloud-init migration is not guessed from partial YAML parsing.
+A generated resolver is not silently unlinked. Missing tools/packages and an
+unavailable C.UTF-8 locale also block staging; collection installs nothing.
+
+All candidates are withheld if any blocker is found. This is an eligibility
+and file-plan check, not proof of connectivity or an apply-ready transaction.
+Global hook/package effects, full provider routing, command-line and external
+locale/environment sources, stale-state revalidation, independent recovery,
+and live transition verification remain part of the apply milestone. File
+plans contain machine-specific data and must remain outside Git.
+
 ## Idempotency and recovery
 
 Idempotency is an acceptance condition for the first apply-capable release.
-Repeated planning is already deterministic, and the profile-block renderer is
-already repeatable. System-wide idempotency has not been implemented or tested.
+Repeated planning is deterministic. Tests simulate writing the candidate
+files to isolated fixtures and confirm that the next plan has no changed
+files, including managed blocks, normalized APT sources, and the UTC symlink. System-wide idempotency has not been implemented or tested.
 
 - Compare candidate content and metadata before writing. Healthy unchanged
   targets do not get a new backup or modified timestamp.

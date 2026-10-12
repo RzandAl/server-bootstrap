@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   validate:
-    name: Validate planning foundation on Debian 13
+    name: Validate host plans on Debian 13
     runs-on: ubuntu-24.04
     container: debian:trixie
     timeout-minutes: 10
@@ -23,7 +23,7 @@ jobs:
       - name: Install validation prerequisites
         run: |
           apt-get update
-          apt-get install --yes --no-install-recommends ca-certificates git python3 tzdata
+          apt-get install --yes --no-install-recommends ca-certificates git python3 tzdata ifupdown iproute2
 
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
