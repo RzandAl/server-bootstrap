@@ -9,11 +9,11 @@ backups and recovery.
 
 > **Target platform:** Debian 13 (trixie), with ifupdown networking.
 >
-> **Development status:** `0.4.0-dev` provides read-only planning, durable file
-> transactions, and an internal systemd/network recovery backend.
-> Detached writes and acknowledgment are enabled only for isolated test roots.
-> Production Base apply, fresh SSH acknowledgment, IPv6 connectivity probes,
-> packages, and modules remain pending. No production release is available.
+> **Development status:** `0.5.0-dev` provides read-only planning, durable file
+> transactions, independent systemd/network recovery, and verified fresh SSH
+> acknowledgment for isolated test roots. Production Base apply, IPv6 gateway
+> and external probes, packages, and modules remain pending.
+> No production release is available.
 
 ## Highlights
 
@@ -41,6 +41,8 @@ backups and recovery.
   incomplete recovery is resolved.
 - Arms protected worker bundles, independent rollback deadlines, and early-boot
   file restoration; journals owned static address/main-route changes.
+- Verifies a new authenticated OpenSSH transport to a candidate address before
+  disarming recovery; a new channel on an old ControlMaster transport is refused.
 
 ## Standard profile
 
@@ -76,7 +78,7 @@ require ifupdown and working CA certificates; the existing MOTD installer needs
 | Planner runtime | Linux, Python 3.11 or newer, installed IANA timezone data |
 | Network profiles | Static IPv4, including `/32`; optional static IPv6 |
 | Local validation | Automated parser, host-audit, preservation, and repeat-planning tests |
-| CI | Debian 13 regressions as root/user, ifupdown/systemd parsing, and isolated kernel/systemd recovery scenarios |
+| CI | Debian 13 regressions as root/user, ifupdown/systemd parsing, isolated kernel recovery, and real OpenSSH reconnects |
 | Live VPS apply | Pending; internal file writes are not connected to the bootstrap CLI |
 
 The account is detected, not selected or created. `USER`, `LOGNAME`, and `HOME`
@@ -134,6 +136,7 @@ The profile format and a documentation-address example are in
 - [Implementation milestones and acceptance criteria](docs/ROADMAP.md)
 - [File transaction state, recovery, and current limits](docs/TRANSACTIONS.md)
 - [Independent systemd recovery and owned network changes](docs/RECOVERY.md)
+- [Fresh SSH acknowledgment and terminal health checks](docs/SSH_ACKNOWLEDGMENT.md)
 - [Continuous integration checks](.github/workflows/ci.yml)
 
 ## Tests and validation
@@ -162,8 +165,9 @@ are skipped for ordinary users; Debian CI runs both variants.
 The supervisor requires a working system manager and system D-Bus; collection
 never installs these prerequisites. A separate CI job runs an isolated Debian
 systemd container with namespace IPv4/IPv6 changes, timer recovery after client
-exit, worker `SIGKILL`, timer disarming, `/24` and `/32` peer restoration, and
-early-boot recovery after manager restart. Real VPS connectivity and reboot
+exit, worker `SIGKILL`, timer disarming, `/24` and `/32` peer restoration, real
+OpenSSH IPv4/IPv6 reconnects, sudo identity, ControlMaster refusal, and early-boot
+recovery after manager restart. Real VPS connectivity and reboot
 validation remain necessary before an apply-capable release is published.
 
 ## Maintainers
