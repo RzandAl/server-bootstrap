@@ -6,6 +6,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import importlib.util
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -31,8 +32,11 @@ def peer_module(name: str):
 
 tx = sys.modules.get("transaction") or peer_module("transaction")
 net = sys.modules.get("network_recovery") or peer_module("network_recovery")
+bootstrap = sys.modules.get("bootstrap") or peer_module("bootstrap")
+ssh = sys.modules.get("ssh_session") or peer_module("ssh_session")
 UNIT_DIRECTORY = Path("/etc/systemd/system")
-BUNDLE = ("transaction.py", "network_recovery.py", "recovery.py")
+BUNDLE = ("bootstrap.py", "transaction.py", "network_recovery.py", "ssh_session.py", "recovery.py")
+LEGACY_BUNDLE = ("transaction.py", "network_recovery.py", "recovery.py")
 SAFE_UNIT_PATH = re.compile(r"/[A-Za-z0-9_./-]+\Z")
 
 
@@ -100,12 +104,14 @@ class RecoverySupervisor:
     """Trusted internal API. There is no CLI arm/apply or production Base switch."""
 
     def __init__(self, manager: tx.FileTransaction, *, systemd: Systemd | None = None,
-                 unit_dir: Path = UNIT_DIRECTORY, backend_factory: Callable = net.IPBackend):
+                 unit_dir: Path = UNIT_DIRECTORY, backend_factory: Callable = net.IPBackend,
+                 session_inspector: ssh.SSHInspector | None = None):
         self.manager = manager
         self.systemd = systemd or Systemd()
         self.unit_dir = Path(unit_dir).absolute()
         self.units_fs = tx.RootFS(self.unit_dir)
         self.backend_factory = backend_factory
+        self.session_inspector = session_inspector or ssh.SSHInspector()
 
     def path(self, run_id: str) -> str:
         self.manager._run_id(run_id)
@@ -121,7 +127,7 @@ class RecoverySupervisor:
                 or type(config.get("timeout")) is not int or not 5 <= config["timeout"] <= 1800
                 or type(config.get("deadline_ns")) is not int or type(config.get("monotonic_deadline_ns")) is not int
                 or config.get("units") != unit_names(run_id) or not isinstance(config.get("bundle_sha256"), dict)
-                or set(config["bundle_sha256"]) != set(BUNDLE)):
+                or set(config["bundle_sha256"]) not in (set(BUNDLE), set(LEGACY_BUNDLE))):
             raise tx.TransactionError("Invalid supervisor configuration")
         net.interface_name(config["interface"])
         expected_texts = unit_texts(run_id, self.manager.state_dir / "runs" / run_id / "worker/recovery.py",
@@ -130,14 +136,42 @@ class RecoverySupervisor:
             raise tx.TransactionError("Recovery unit definitions do not match the saved run")
         if config.get("namespace") is not None and self.manager.fs.root == Path("/"):
             raise tx.TransactionError("Fixture namespaces are not allowed for the system root")
+        if config.get("acknowledgment") is not None:
+            self.validate_acknowledgment(config["acknowledgment"])
         return config
+
+    @staticmethod
+    def validate_acknowledgment(value: dict[str, Any]) -> None:
+        if (not isinstance(value, dict) or set(value) != {"account", "targets", "origin", "ready_ticks", "phase", "evidence"}
+                or value.get("phase") not in ("pending", "waiting", "acknowledging", "acknowledged", "rolled_back")
+                or not isinstance(value.get("targets"), list) or not 1 <= len(value["targets"]) <= 2
+                or any(not isinstance(target, str) for target in value["targets"])
+                or len(set(value["targets"])) != len(value["targets"])):
+            raise tx.TransactionError("Invalid SSH acknowledgment contract")
+        ssh.validate_account(value["account"])
+        for target in value["targets"]:
+            parsed = ipaddress.ip_address(ssh.address(target))
+            if (str(parsed) != target or parsed.is_loopback or parsed.is_link_local
+                    or parsed == ipaddress.IPv4Address("255.255.255.255")):
+                raise tx.TransactionError("Invalid candidate SSH target")
+        for evidence in (value["origin"], value["evidence"]):
+            if evidence is not None:
+                ssh.validate_evidence(evidence, value["account"])
+        ready = value["ready_ticks"]
+        if ready is not None and (type(ready) is not int or ready <= 0):
+            raise tx.TransactionError("Invalid SSH acknowledgment ready time")
+        if (value["phase"] in {"waiting", "acknowledging", "acknowledged"} and ready is None
+                or value["phase"] in {"acknowledging", "acknowledged"} and value["evidence"] is None
+                or value["phase"] in {"pending", "waiting"} and value["evidence"] is not None):
+            raise tx.TransactionError("SSH acknowledgment evidence is inconsistent with its phase")
 
     def network(self, run_id: str, config: dict[str, Any]) -> net.NetworkJournal:
         backend = self.backend_factory(config["interface"], namespace=config.get("namespace"))
         return net.NetworkJournal(self.manager, run_id, backend)
 
     def arm(self, run_id: str, report: dict[str, Any], *, interface: str,
-            operations: list[dict[str, Any]], timeout: int = 300, namespace: str | None = None) -> None:
+            operations: list[dict[str, Any]], timeout: int = 300, namespace: str | None = None,
+            ssh_targets: list[str] | None = None) -> None:
         if self.manager.owner != 0 and self.manager.fs.root == Path("/"):
             raise tx.TransactionError("System recovery requires root")
         if namespace is not None and self.manager.fs.root == Path("/"):
@@ -148,6 +182,16 @@ class RecoverySupervisor:
         texts = unit_texts(run_id, worker, self.manager.state_dir, timeout, deadline)
         self.systemd.ready()
         generation = self.systemd.generation()
+        acknowledgment = None
+        if ssh_targets is not None:
+            account = self.session_inspector.account()
+            acknowledgment = {"account": account, "targets": ssh_targets,
+                              "origin": self.session_inspector.capture(account, required=False),
+                              "ready_ticks": None, "phase": "pending", "evidence": None}
+            self.validate_acknowledgment(acknowledgment)
+            reviewed_account = report.get("facts", {}).get("account", {})
+            if any(reviewed_account.get(key, account[key]) != account[key] for key in account):
+                raise tx.StalePlan("Reviewed invoking account changed before SSH recovery arming")
         with self.manager._lock():
             backup, journal = self.manager._run(run_id)
             if (self.manager._active() != run_id or journal["phase"] != "prepared"
@@ -162,9 +206,20 @@ class RecoverySupervisor:
                       "interface": interface, "namespace": namespace, "timeout": timeout,
                       "deadline_ns": deadline, "monotonic_deadline_ns": time.monotonic_ns() + timeout * 1_000_000_000,
                       "generation": generation, "phase": "arming", "units": unit_names(run_id),
-                      "bundle_sha256": {}, "unit_texts": texts, "report": report}
+                      "bundle_sha256": {}, "unit_texts": texts, "report": report,
+                      "acknowledgment": acknowledgment}
             network = self.network(run_id, config)
             network.prepare_locked(operations)
+            if acknowledgment is not None:
+                projected = {net.identity(obj): obj for obj in network.load()["before"]["objects"]}
+                for operation in network.load()["operations"]:
+                    if operation["action"] == "add":
+                        projected[net.identity(operation["object"])] = operation["object"]
+                    else:
+                        projected.pop(net.identity(operation["object"]), None)
+                addresses = {obj["cidr"].split("/")[0] for obj in projected.values() if obj["kind"] == "address"}
+                if not set(acknowledgment["targets"]) <= addresses:
+                    raise tx.TransactionError("SSH acknowledgment targets are absent from the planned final addresses")
             self.manager._directory(worker_dir, create=True)
             for name in BUNDLE:
                 data = Path(__file__).absolute().with_name(name).read_bytes()
@@ -236,6 +291,11 @@ class RecoverySupervisor:
         self.manager.apply_files(run_id, refresh=lambda: config["report"])
         with self.manager._lock():
             self.network(run_id, config).apply_locked()
+            config = self.load(run_id)
+            if config.get("acknowledgment") is not None:
+                config["acknowledgment"]["ready_ticks"] = self.session_inspector.ticks()
+                config["acknowledgment"]["phase"] = "waiting"
+                self.manager._save(self.path(run_id), config)
 
     def cleanup(self, run_id: str, config: dict[str, Any], *, clean_stamp: bool = True) -> None:
         # Stop/disable only names generated for this run. Do not stop this recovery
@@ -274,6 +334,9 @@ class RecoverySupervisor:
                 self.manager._save(self.path(run_id), config)
                 raise
             config["phase"] = journal["phase"]
+            acknowledgment = config.get("acknowledgment")
+            if acknowledgment is not None:
+                acknowledgment["phase"] = "acknowledged" if journal["phase"] == "committed" else "rolled_back"
             self.manager._save(self.path(run_id), config)
             # Early boot precedes the system bus. Disable units and restore files
             # using the manager's private socket; retain the harmless timer stamp.
@@ -286,6 +349,8 @@ class RecoverySupervisor:
             raise tx.TransactionError("Production acknowledgment is not implemented")
         with self.manager._lock():
             config = self.load(run_id)
+            if config.get("acknowledgment") is not None:
+                raise tx.TransactionError("This run requires fresh SSH acknowledgment; fixture commit cannot bypass it")
             if (self.systemd.generation() != config["generation"]
                     or time.monotonic_ns() >= config["monotonic_deadline_ns"]
                     or not self.systemd.active(config["units"]["timer"]) or verify() is not True):
@@ -295,6 +360,61 @@ class RecoverySupervisor:
             config["phase"] = "committed"
             self.manager._save(self.path(run_id), config)
             self.cleanup(run_id, config)
+
+    def acknowledgment_guard(self, run_id: str, config: dict[str, Any]) -> dict:
+        if (self.systemd.generation() != config["generation"]
+                or time.monotonic_ns() >= config["monotonic_deadline_ns"]
+                or time.time_ns() >= config["deadline_ns"]
+                or not self.systemd.active(config["units"]["timer"])):
+            raise tx.TransactionError("SSH acknowledgment expired or its independent guard is absent")
+        account = self.session_inspector.account()
+        acknowledgment = config["acknowledgment"]
+        if account != acknowledgment["account"]:
+            raise tx.TransactionError("Only the original invoking account may acknowledge this run")
+        evidence = self.session_inspector.capture(account)
+        ssh.validate_evidence(evidence, account)
+        if evidence["monitor_start_ticks"] <= acknowledgment["ready_ticks"]:
+            raise tx.TransactionError("Reconnect with a new SSH connection opened after application completed")
+        if acknowledgment["origin"] is not None and ssh.same_connection(evidence, acknowledgment["origin"]):
+            raise tx.TransactionError("The original SSH connection cannot acknowledge its own transition")
+        if evidence["connection"]["server_address"] not in acknowledgment["targets"]:
+            raise tx.TransactionError("SSH acknowledgment must connect to a planned candidate address")
+        if time.monotonic_ns() >= config["monotonic_deadline_ns"] or time.time_ns() >= config["deadline_ns"]:
+            raise tx.TransactionError("SSH acknowledgment deadline expired while collecting evidence")
+        return evidence
+
+    def acknowledge(self, run_id: str) -> dict[str, Any]:
+        """Verify a new authenticated connection and the complete fixture result."""
+        if self.manager.fs.root == Path("/"):
+            raise tx.TransactionError("Production Base acknowledgment awaits module/probe wiring")
+        with self.manager._lock():
+            config = self.load(run_id)
+            acknowledgment = config.get("acknowledgment")
+            if acknowledgment is None:
+                raise tx.TransactionError("Run has no fresh SSH acknowledgment contract")
+            _, journal = self.manager._run(run_id)
+            if journal["phase"] == "committed" and acknowledgment["phase"] in {"acknowledging", "acknowledged"}:
+                acknowledgment["phase"] = "acknowledged"
+                self.manager._save(self.path(run_id), config)
+                self.cleanup(run_id, config)
+                return journal
+            if (self.manager._active() != run_id or journal["phase"] != "applied"
+                    or config["phase"] != "started" or acknowledgment["phase"] not in {"waiting", "acknowledging"}):
+                raise tx.TransactionError("Only the active completed transition can await SSH acknowledgment")
+            self.verify_bundle(run_id, config)
+            evidence = self.acknowledgment_guard(run_id, config)
+            self.network(run_id, config).verify_applied_locked()
+            acknowledgment["phase"], acknowledgment["evidence"] = "acknowledging", evidence
+            self.manager._save(self.path(run_id), config)
+            def final_guard():
+                self.network(run_id, config).verify_applied_locked()
+                if self.acknowledgment_guard(run_id, config) != evidence:
+                    raise tx.TransactionError("SSH connection changed before terminal commit")
+            self.manager._commit_locked(run_id, coordinated=True, before_commit=final_guard)
+            config["phase"], acknowledgment["phase"] = "committed", "acknowledged"
+            self.manager._save(self.path(run_id), config)
+            self.cleanup(run_id, config)
+            return self.manager._run(run_id)[1]
 
 
 def cli_manager(run_id: str) -> tx.FileTransaction:
@@ -317,7 +437,7 @@ def cli_manager(run_id: str) -> tx.FileTransaction:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Inspect or recover a supervised run; production Base apply is unavailable.")
-    parser.add_argument("operation", choices=("status", "recover", "_apply", "_boot"))
+    parser.add_argument("operation", choices=("status", "recover", "acknowledge", "_apply", "_boot"))
     parser.add_argument("run_id")
     options = parser.parse_args(argv)
     try:
@@ -333,6 +453,8 @@ def main(argv: list[str] | None = None) -> int:
             supervisor.apply_fixture(options.run_id)
         elif options.operation in {"recover", "_boot"}:
             print(json.dumps(supervisor.recover(options.run_id, boot=options.operation == "_boot"), indent=2))
+        elif options.operation == "acknowledge":
+            print(json.dumps(supervisor.acknowledge(options.run_id), indent=2))
         else:
             print(json.dumps(manager.status(options.run_id), indent=2))
         return 0

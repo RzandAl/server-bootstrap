@@ -543,7 +543,8 @@ class FileTransaction:
         with self._lock():
             self._commit_locked(run_id)
 
-    def _commit_locked(self, run_id: str, *, coordinated: bool = False) -> None:
+    def _commit_locked(self, run_id: str, *, coordinated: bool = False,
+                       before_commit: Callable[[], None] | None = None) -> None:
         backup, journal = self._run(run_id)
         if journal.get("supervised") and not coordinated:
             raise TransactionError("Supervised run requires the recovery supervisor's health checks")
@@ -552,6 +553,8 @@ class FileTransaction:
         for entry in backup["files"]:
             if not same_file(self.fs.snapshot(entry["path"]), entry["after"]):
                 raise StalePlan(f"{entry['path']}: candidate changed before commit")
+        if before_commit is not None:
+            before_commit()
         journal["phase"] = "committed"
         self._save(f"/runs/{run_id}/journal.json", journal)
         self._clear(run_id)

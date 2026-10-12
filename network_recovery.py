@@ -441,9 +441,11 @@ class NetworkJournal:
 
     def verify_result(self, data: dict[str, Any]) -> None:
         current = self.current(data)
-        expected = {}
+        # Health includes reused and preserved static state, especially an
+        # unchanged gateway route. Kernel connected routes follow addresses.
+        expected = {identity(obj): obj for obj in data["before"]["objects"]
+                    if not (obj["kind"] == "route" and obj["protocol"] == "kernel")}
         for entry in data["operations"]:
-            if entry["owned"]:
-                expected[identity(entry["object"])] = entry["object"] if entry["action"] == "add" else None
+            expected[identity(entry["object"])] = entry["object"] if entry["action"] == "add" else None
         if any(current.get(key) != obj for key, obj in expected.items()):
             raise tx.StalePlan("Applied network changed before acknowledgment")
