@@ -38,7 +38,7 @@ MOTD_REPOSITORY = "RzandAl/debian-server-info-motd"
 MOTD_SOURCE_REF = "v0.4.0"
 MOTD_RELEASE = {
     "repository": MOTD_REPOSITORY, "source_ref": MOTD_SOURCE_REF,
-    "commit": "5aa02b8ec48feca8cf0be10d65df79da77d1bb62", "version": "0.4.0",
+    "commit": "5aa02b8ec48feca8cf0be10d65df79da77d1bb62", "version": MOTD_SOURCE_REF.removeprefix("v"),
     "files": {
         "install.sh": "bb6e90036d39672e851ea28412436a867b21cc7ef79d9abd133c51f7ec78af52",
         "VERSION": "40b8eb4000a913a7791090535f291d3d369874162a89ef3c9e3d4e887a1b9e79",
