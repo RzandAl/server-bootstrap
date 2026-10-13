@@ -82,6 +82,9 @@ jobs:
       - name: Exercise reviewed Base and native APT in isolated target roots
         run: docker exec --workdir /opt/bootstrap rzandal-recovery-ci python3 tests/integration/base_application.py -v
 
+      - name: Verify native MOTD after Base fresh SSH commit and interruption reporting
+        run: docker exec --workdir /opt/bootstrap rzandal-recovery-ci python3 tests/integration/motd_module.py -v
+
       - name: Test owned network changes and independent recovery
         run: docker exec --workdir /opt/bootstrap rzandal-recovery-ci python3 tests/integration/kernel_recovery.py -v
 
