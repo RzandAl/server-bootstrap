@@ -207,6 +207,15 @@ class RecoverySupervisor:
     def hostname(self, run_id: str) -> base.HostnameJournal:
         return base.HostnameJournal(self.manager, run_id, self.hostname_backend_factory(self.manager.fs.root))
 
+    def status(self, run_id: str) -> dict:
+        result = self.manager.status(run_id)
+        config = self.load(run_id)
+        if config.get("base_apply") is not None:
+            journal = self.packages(run_id, config).load()
+            result["packages"] = {key: journal[key] for key in ("phase", "steps", "manual_attention")}
+            result["packages"]["policy"] = "retained"
+        return result
+
     def check_guard(self, config: dict) -> None:
         if (self.systemd.generation() != config["generation"]
                 or time.monotonic_ns() >= config["monotonic_deadline_ns"] or time.time_ns() >= config["deadline_ns"]
@@ -466,10 +475,10 @@ class RecoverySupervisor:
             # Early boot precedes the system bus. Disable units and restore files
             # using the manager's private socket; retain the harmless timer stamp.
             self.cleanup(run_id, config, clean_stamp=not different_boot)
-        return journal
+        return self.status(run_id)
 
     def commit_fixture(self, run_id: str, *, verify: Callable[[], bool]) -> None:
-        """Test lifecycle only. Fresh-SSH acknowledgment for real Base is pending."""
+        """Legacy fixture callbacks cannot bypass Base's required fresh SSH proof."""
         if self.manager.fs.root == Path("/"):
             raise tx.TransactionError("Production acknowledgment is not implemented")
         with self.manager._lock():
@@ -589,7 +598,7 @@ def main(argv: list[str] | None = None) -> int:
         elif options.operation == "acknowledge":
             print(json.dumps(supervisor.acknowledge(options.run_id), indent=2))
         else:
-            print(json.dumps(manager.status(options.run_id), indent=2))
+            print(json.dumps(supervisor.status(options.run_id), indent=2))
         return 0
     except (tx.TransactionError, OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"Recovery: {error}", file=sys.stderr)
