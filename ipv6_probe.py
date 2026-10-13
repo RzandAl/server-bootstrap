@@ -92,7 +92,7 @@ def mark_value(value: Any) -> int:
 
 def objects(config: dict, allocation: dict, *, reused: bool) -> list[dict]:
     source = str(ipaddress.ip_interface(config["cidr"]).ip)
-    route = {"kind": "route", "family": 6, "metric": 1024, "protocol": "static", "onlink": False,
+    route = {"kind": "route", "family": 6, "src": source, "metric": 1024, "protocol": "static", "onlink": False,
              "pref": "medium", "table": allocation["table"]}
     return [
         {"kind": "address", "cidr": config["cidr"], "mode": "regular" if reused else "probe"},
@@ -264,6 +264,7 @@ class ProbeBackend(net.IPBackend):
                          "proto", "static", "scope", obj["scope"], "metric", str(obj["metric"]), "pref", "medium"]
             if "gateway" in obj:
                 arguments.extend(["via", obj["gateway"]])
+            arguments.extend(["src", obj["src"]])
         self.command(arguments)
 
     def wait_dad(self, config: dict) -> None:
