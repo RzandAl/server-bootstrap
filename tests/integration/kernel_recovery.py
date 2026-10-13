@@ -33,6 +33,12 @@ def wait_for(predicate, seconds=20):
                 return result
         except tx.BusyRun:
             pass  # A writer/rollback legitimately holds the project's lock.
+        except tx.StalePlan as error:
+            # A protected journal can be atomically replaced between lstat
+            # and open while CI polls it. Retry only that read collision;
+            # real stale-plan or ownership failures still fail immediately.
+            if not str(error).endswith(": changed while opening"):
+                raise
         time.sleep(0.15)
     raise AssertionError("Integration condition did not complete before timeout")
 
