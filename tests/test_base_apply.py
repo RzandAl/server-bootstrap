@@ -123,7 +123,7 @@ class BaseTests(unittest.TestCase):
                       if after["kind"] == "regular" else {**after, "mode": 0o777})
             entry["changed"] = not tx.same_file(entry["before"], target)
         return base.prepare_review(self.profile, report, network=self.ip, hostname=self.hostname,
-                                   packages=self.packages, inspector=self.inspector)
+                                   packages=self.packages, inspector=self.inspector, **getattr(self, "motd_review", {}))
 
     def launch(self):
         report = self.report()
