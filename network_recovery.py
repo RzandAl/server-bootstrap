@@ -230,11 +230,15 @@ class NetworkJournal:
         self.manager, self.run_id, self.backend = manager, run_id, backend
         self.path = f"/runs/{run_id}/network.json"
 
-    def prepare_locked(self, operations: list[dict[str, Any]]) -> None:
+    def prepare_locked(self, operations: list[dict[str, Any]], *,
+                       deferred_operations: list[dict[str, Any]] | None = None) -> None:
         if self.manager.store.snapshot(self.path)["kind"] != "absent":
             raise tx.TransactionError("Network journal already exists")
-        if not isinstance(operations, list) or len(operations) > 64:
+        deferred_operations = [] if deferred_operations is None else deferred_operations
+        if not isinstance(operations, list) or not isinstance(deferred_operations, list) or len(operations) + len(deferred_operations) > 64:
             raise tx.TransactionError("Invalid network operation list")
+        deferred_start = len(operations)
+        operations = [*operations, *deferred_operations]
         before = self.backend.snapshot()
         projected = {identity(obj): obj for obj in before["objects"]}
         entries = []
@@ -257,16 +261,20 @@ class NetworkJournal:
                     projected.pop(key)
         self.manager._save(self.path, {"schema_version": 1, "run_id": self.run_id,
                            "interface": self.backend.interface, "namespace": self.backend.namespace,
-                           "before": before, "operations": entries, "implicit_routes": [], "phase": "prepared"})
+                           "before": before, "operations": entries, "deferred_start": deferred_start,
+                           "implicit_routes": [], "phase": "prepared"})
 
     def load(self) -> dict[str, Any]:
         data = self.manager._load(self.path)
         if (data.get("schema_version") != 1 or data.get("run_id") != self.run_id
                 or data.get("interface") != self.backend.interface or data.get("namespace") != self.backend.namespace
                 or not isinstance(data.get("phase"), str)
-                or data["phase"] not in {"prepared", "applying", "applied", "rolling_back", "rolled_back", "recovery_failed", "expired_on_boot"}
+                or data["phase"] not in {"prepared", "applying", "applied", "finalizing", "finalized", "rolling_back", "rolled_back", "recovery_failed", "expired_on_boot"}
                 or not isinstance(data.get("operations"), list) or len(data["operations"]) > 64):
             raise tx.TransactionError("Invalid network journal")
+        start = data.get("deferred_start", len(data["operations"]))
+        if type(start) is not int or not 0 <= start <= len(data["operations"]):
+            raise tx.TransactionError("Invalid deferred network boundary")
         before = data.get("before")
         if (not isinstance(before, dict) or set(before) != {"link", "objects", "pending"}
                 or not isinstance(before["link"], dict) or before["link"].get("ifname") != self.backend.interface
@@ -303,7 +311,28 @@ class NetworkJournal:
             raise tx.StalePlan("Network changed after review")
         data["phase"] = "applying"
         self.manager._save(self.path, data)
-        for entry in data["operations"]:
+        self.apply_entries(data, data["operations"][:data.get("deferred_start", len(data["operations"]))])
+        self.verify_result(data, final=False)
+        data["phase"] = "applied"
+        self.manager._save(self.path, data)
+
+    def finalize_locked(self) -> None:
+        data = self.load()
+        if data["phase"] == "finalized":
+            self.verify_result(data, final=True)
+            return
+        if data["phase"] != "applied":
+            raise tx.TransactionError("Only an applied network may finish deferred operations")
+        self.verify_result(data, final=False)
+        data["phase"] = "finalizing"
+        self.manager._save(self.path, data)
+        self.apply_entries(data, data["operations"][data.get("deferred_start", len(data["operations"])):])
+        self.verify_result(data, final=True)
+        data["phase"] = "finalized"
+        self.manager._save(self.path, data)
+
+    def apply_entries(self, data: dict[str, Any], entries: list[dict[str, Any]]) -> None:
+        for entry in entries:
             if not entry["owned"]:
                 entry["phase"] = "done"
                 self.manager._save(self.path, data)
@@ -324,9 +353,6 @@ class NetworkJournal:
                 raise tx.RecoveryError("Network command did not produce its expected state")
             entry["phase"] = "done"
             self.manager._save(self.path, data)
-        self.verify_result(data)
-        data["phase"] = "applied"
-        self.manager._save(self.path, data)
 
     def record_route_dependencies(self, data: dict[str, Any]) -> None:
         """The kernel can remove manual routes when an interface loses its last IP.
@@ -435,17 +461,20 @@ class NetworkJournal:
 
     def verify_applied_locked(self) -> None:
         data = self.load()
-        if data["phase"] != "applied":
+        if data["phase"] not in {"applied", "finalized"}:
             raise tx.TransactionError("Network application has not completed")
         self.verify_result(data)
 
-    def verify_result(self, data: dict[str, Any]) -> None:
+    def verify_result(self, data: dict[str, Any], *, final: bool | None = None) -> None:
         current = self.current(data)
         # Health includes reused and preserved static state, especially an
         # unchanged gateway route. Kernel connected routes follow addresses.
         expected = {identity(obj): obj for obj in data["before"]["objects"]
                     if not (obj["kind"] == "route" and obj["protocol"] == "kernel")}
-        for entry in data["operations"]:
+        if final is None:
+            final = data["phase"] == "finalized"
+        entries = data["operations"] if final else data["operations"][:data.get("deferred_start", len(data["operations"]))]
+        for entry in entries:
             expected[identity(entry["object"])] = entry["object"] if entry["action"] == "add" else None
         if any(current.get(key) != obj for key, obj in expected.items()):
             raise tx.StalePlan("Applied network changed before acknowledgment")

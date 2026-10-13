@@ -32,6 +32,8 @@ IPV6_PROBE_TARGETS = (("2606:4700:4700::1111", 443), ("2620:fe::10", 53))
 BASE_PACKAGES = (
     "curl", "git", "rsync", "jq", "unzip", "htop", "mtr-tiny", "tcpdump", "ccze",
 )
+APT_UPDATE = ("apt-get", "-o", "APT::Update::Error-Mode=any", "update")
+APT_INSTALL = ("apt-get", "install", "--yes", "--no-install-recommends", "--no-upgrade", "--no-remove")
 MOTD_REPOSITORY = "RzandAl/debian-server-info-motd"
 MOTD_SOURCE_REF = "v0.3.1"
 APT_SOURCES = (
@@ -232,6 +234,7 @@ def build_plan(profile: Profile) -> dict[str, Any]:
         "schema_version": 1,
         "mode": "preview",
         "apply_available": False,
+        "package_commands": {"update": list(APT_UPDATE), "install": list(APT_INSTALL)},
         "ipv6_probe": {"cidr": profile.ipv6_cidr, "gateway": profile.ipv6_gateway,
                        "targets": [{"address": address, "port": port} for address, port in IPV6_PROBE_TARGETS]}
                       if profile.ipv6_enabled else None,
