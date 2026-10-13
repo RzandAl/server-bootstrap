@@ -88,6 +88,21 @@ class BaseFixture:
             device = self.root / "dev" / name
             if not device.exists():
                 os.mknod(device, stat.S_IFCHR | 0o666, os.makedev(1, minor))
+        # Seed the explicitly supported regular-file fixture subset. Debian's
+        # package-owned aliases are preserved in the template; no fixture write
+        # may follow an absolute symlink into the container's own /etc.
+        locale = self.root / "etc/default/locale"
+        if locale.is_symlink():
+            locale.unlink()
+        shell_extra = self.root / "etc/profile.d/70-systemd-shell-extra.sh"
+        if shell_extra.is_symlink():
+            link = shell_extra.readlink()
+            source = (self.root / str(link).lstrip("/") if link.is_absolute()
+                      else shell_extra.parent / link).resolve()
+            source.relative_to(self.root.resolve())
+            content = source.read_bytes()
+            shell_extra.unlink()
+            shell_extra.write_bytes(content)
         self.write("/etc/hostname", "oldhost\n")
         self.write("/etc/hosts", "127.0.0.1 localhost\n127.0.1.1 oldhost alias\n::1 localhost\n")
         self.write("/etc/resolv.conf", "nameserver 192.0.2.53\n")
@@ -116,6 +131,8 @@ class BaseFixture:
     def write(self, path, content):
         local = self.root / path.lstrip("/")
         local.parent.mkdir(parents=True, exist_ok=True)
+        if local.is_symlink():
+            raise RuntimeError("Fixture writes refuse symlink targets: " + path)
         local.write_text(content)
 
     def review(self):
