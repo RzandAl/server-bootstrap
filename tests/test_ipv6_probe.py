@@ -366,7 +366,7 @@ class ProbeParserTests(unittest.TestCase):
         allocation = {"table": probe.TABLE_BASE, "priority": probe.PRIORITY_BASE, "mark": probe.MARK_BASE}
         expected = probe.objects(CONFIG, allocation, reused=False)[1]
         raw = {"dst": CONFIG["gateway"], "dev": "ens3", "table": allocation["table"],
-               "protocol": "static", "metric": 1024, "flags": [], "pref": "medium"}
+               "protocol": "static", "prefsrc": "2001:db8:2::20", "metric": 1024, "flags": [], "pref": "medium"}
         with mock.patch.object(backend, "all_routes", return_value=[raw]):
             self.assertEqual(backend.current(expected, CONFIG, allocation), expected)
         with mock.patch.object(backend, "all_routes", return_value=[{**raw, "nhid": 99}]):
@@ -391,10 +391,12 @@ class ProbeParserTests(unittest.TestCase):
     def test_route_lookup_must_use_selected_gateway_table_and_interface(self):
         backend = probe.ProbeBackend("ens3")
         allocation = {"table": probe.TABLE_BASE, "priority": probe.PRIORITY_BASE, "mark": probe.MARK_BASE}
-        route = {"table": probe.TABLE_BASE, "gateway": CONFIG["gateway"], "dev": "ens3", "from": "2001:db8:2::20"}
+        route = {"table": probe.TABLE_BASE, "gateway": CONFIG["gateway"], "dev": "ens3",
+                 "from": "2001:db8:2::20", "prefsrc": "2001:db8:2::20"}
         with mock.patch.object(backend, "values", return_value=[route]):
             backend.verify_route(CONFIG, allocation, CONFIG["targets"][0]["address"])
-        for key, value in (("table", 254), ("gateway", "fe80::2"), ("dev", "eth1"), ("from", "2001:db8:1::10")):
+        for key, value in (("table", 254), ("gateway", "fe80::2"), ("dev", "eth1"),
+                           ("from", "2001:db8:1::10"), ("prefsrc", "2001:db8:1::10")):
             with mock.patch.object(backend, "values", return_value=[{**route, key: value}]), self.assertRaises(tx.RecoveryError):
                 backend.verify_route(CONFIG, allocation, CONFIG["targets"][0]["address"])
 
