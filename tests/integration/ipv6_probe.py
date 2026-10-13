@@ -153,6 +153,15 @@ class IPv6ProbeTests(unittest.TestCase):
         fixture.supervisor.recover(fixture.run_id)
         fixture.assert_restored()
 
+    def test_global_in_prefix_gateway_with_new_candidate_address(self):
+        fixture, peer = self.fixture(gateway="2001:db8:2::1")
+        fixture.start()
+        self.assertFalse(self.participant(fixture).load()["reused"])
+        self.assertEqual(self.participant(fixture).load()["phase"], "passed")
+        self.assert_cleaned(fixture)
+        fixture.supervisor.recover(fixture.run_id)
+        fixture.assert_restored()
+
     def test_actual_duplicate_address_fails_before_any_permanent_file(self):
         fixture, peer = self.fixture()
         peer.ip(peer.router, ["-6", "address", "add", "2001:db8:2::20/64", "dev", "peer0", "nodad"])
