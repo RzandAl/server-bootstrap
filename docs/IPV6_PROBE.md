@@ -47,7 +47,9 @@ and avoids an added connected-prefix route in the main table. DAD remains
 enabled. An existing identical regular address is reused without changing
 lifetimes or flags and is never owned by the probe.
 
-The temporary table contains a direct gateway host route and its default route.
+The temporary table contains a direct gateway host route and its default route,
+both with the candidate as their explicit preferred source. This avoids an old
+preferred address appearing in the kernel lookup for a new deprecated candidate.
 The temporary rule requires both the candidate `/128` source and the owned mark.
 Each TCP socket explicitly binds the candidate, interface and mark; an older
 working address or the ordinary default route cannot satisfy the contract.
