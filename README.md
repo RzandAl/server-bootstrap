@@ -9,10 +9,10 @@ backups and recovery.
 
 > **Target platform:** Debian 13 (trixie), with ifupdown networking.
 >
-> **Development status:** `0.5.0-dev` provides read-only planning, durable file
+> **Development status:** `0.6.0-dev` provides read-only planning, durable file
 > transactions, independent systemd/network recovery, and verified fresh SSH
-> acknowledgment for isolated test roots. Production Base apply, IPv6 gateway
-> and external probes, packages, and modules remain pending.
+> acknowledgment and temporary IPv6 probing for isolated test roots.
+> Production Base apply, packages, and modules remain pending.
 > No production release is available.
 
 ## Highlights
@@ -43,6 +43,8 @@ backups and recovery.
   file restoration; journals owned static address/main-route changes.
 - Verifies a new authenticated OpenSSH transport to a candidate address before
   disarming recovery; a new channel on an old ControlMaster transport is refused.
+- Checks candidate IPv6 DAD, gateway NDP, and source-bound external TCP under
+  the independent guard; removes its temporary address/routes/rule before files.
 
 ## Standard profile
 
@@ -78,7 +80,7 @@ require ifupdown and working CA certificates; the existing MOTD installer needs
 | Planner runtime | Linux, Python 3.11 or newer, installed IANA timezone data |
 | Network profiles | Static IPv4, including `/32`; optional static IPv6 |
 | Local validation | Automated parser, host-audit, preservation, and repeat-planning tests |
-| CI | Debian 13 regressions as root/user, ifupdown/systemd parsing, isolated kernel recovery, and real OpenSSH reconnects |
+| CI | Debian 13 regressions as root/user, ifupdown/systemd parsing, kernel recovery, real OpenSSH reconnects, and routed IPv6 probes |
 | Live VPS apply | Pending; internal file writes are not connected to the bootstrap CLI |
 
 The account is detected, not selected or created. `USER`, `LOGNAME`, and `HOME`
@@ -137,6 +139,7 @@ The profile format and a documentation-address example are in
 - [File transaction state, recovery, and current limits](docs/TRANSACTIONS.md)
 - [Independent systemd recovery and owned network changes](docs/RECOVERY.md)
 - [Fresh SSH acknowledgment and terminal health checks](docs/SSH_ACKNOWLEDGMENT.md)
+- [Temporary IPv6 checks, success policy, and owned cleanup](docs/IPV6_PROBE.md)
 - [Continuous integration checks](.github/workflows/ci.yml)
 
 ## Tests and validation
@@ -167,7 +170,10 @@ never installs these prerequisites. A separate CI job runs an isolated Debian
 systemd container with namespace IPv4/IPv6 changes, timer recovery after client
 exit, worker `SIGKILL`, timer disarming, `/24` and `/32` peer restoration, real
 OpenSSH IPv4/IPv6 reconnects, sudo identity, ControlMaster refusal, and early-boot
-recovery after manager restart. Real VPS connectivity and reboot
+recovery after manager restart. Routed IPv6 cases verify actual DAD failure,
+link-local/global gateways, blocked Echo, candidate-bound TCP, a working old
+source with a failing new source, reused addresses, and interrupted-probe cleanup.
+Real VPS connectivity and reboot
 validation remain necessary before an apply-capable release is published.
 
 ## Maintainers
