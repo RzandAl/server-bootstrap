@@ -1,10 +1,11 @@
 # Planning and architecture
 
 This is the working design for the apply-capable first release. The current
-`0.6.0-dev` build implements collection, validation, read-only host preflight,
+`0.7.0-dev` build implements collection, validation, read-only host preflight,
 exact file candidates, durable file transactions, and independent systemd/network
 recovery with fresh SSH acknowledgment and temporary IPv6 probing on isolated
-roots and namespaces. The bootstrap CLI does not
+roots and namespaces, plus [reviewed Base application](BASE_APPLICATION.md)
+with runtime hostname and retained package diagnostics. The bootstrap CLI does not
 execute the production apply workflow yet.
 
 ## Scope
@@ -230,6 +231,15 @@ Use `apt-get update` and `apt-get install` in the apply engine. Installing
 missing selected packages is naturally repeatable; do not upgrade the entire
 system or remove packages as an incidental part of bootstrap.
 
+The fixture engine uses strict update error handling and installs only missing
+Base names with `--no-install-recommends --no-upgrade --no-remove`. Dependency
+installation can still change other package versions; this is not a frozen
+package transaction. Read-only dpkg inventory/audit checks must be healthy
+before arming and before acknowledgment. Installed packages, dependencies,
+indexes and caches remain after any recovery. No automatic repair, removal or
+downgrade is attempted; unhealthy retained state is reported for manual repair
+and does not prevent restoration of files, network or runtime hostname.
+
 Keep Python, timezone data, iproute2, ifupdown, and CA-certificate prerequisites
 distinct from the convenience package list. If a prerequisite is unavailable
 at collection time, exit with an explicit prerequisite message. Never install
@@ -317,7 +327,8 @@ System-wide idempotency has not been implemented or tested.
 - Recover configuration and live networking separately. Explicitly report any
   partial recovery failure and keep recovery data for a console repair.
 - Package installation is not a fully reversible file transaction. Preserve
-  installed packages if a later module fails; report the completed steps.
+  installed packages after any failure or timeout; report completed steps and
+  package state requiring manual attention.
 - A MOTD failure uses its native recovery lifecycle and leaves a verified Base
   stage intact. Do not undo working networking solely because a later module
   failed.

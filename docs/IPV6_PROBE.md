@@ -97,7 +97,7 @@ container; no host ports are published.
 
 These tests establish the owned kernel behavior in that environment. They do
 not establish a particular VPS provider's routing, external service availability,
-package recovery, or healthy reboot after production Base. Those remain release
+arbitrary package-hook effects, or healthy reboot after production Base. Those remain release
 acceptance checks.
 
 Relevant primary documentation:
