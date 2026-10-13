@@ -28,6 +28,7 @@ DEFAULT_USER_TIMEZONE = "Europe/Moscow"
 DEFAULT_INTERFACE = "ens3"
 DNS_IPV4 = ("1.1.1.1", "9.9.9.10")
 DNS_IPV6 = ("2606:4700:4700::1111",)
+IPV6_PROBE_TARGETS = (("2606:4700:4700::1111", 443), ("2620:fe::10", 53))
 BASE_PACKAGES = (
     "curl", "git", "rsync", "jq", "unzip", "htop", "mtr-tiny", "tcpdump", "ccze",
 )
@@ -231,6 +232,9 @@ def build_plan(profile: Profile) -> dict[str, Any]:
         "schema_version": 1,
         "mode": "preview",
         "apply_available": False,
+        "ipv6_probe": {"cidr": profile.ipv6_cidr, "gateway": profile.ipv6_gateway,
+                       "targets": [{"address": address, "port": port} for address, port in IPV6_PROBE_TARGETS]}
+                      if profile.ipv6_enabled else None,
         "base": {
             "hostname": profile.hostname, "interface": profile.interface, "user": profile.user,
             "ipv4": profile.ipv4_cidr, "ipv4_gateway": profile.ipv4_gateway,
@@ -408,6 +412,10 @@ def format_plan(plan: dict[str, Any]) -> str:
     ):
         lines.append(f"  {label}: {base[key] if base[key] is not None else 'not configured'}")
     lines.append("  DNS: " + ", ".join(base["dns"]))
+    if plan.get("ipv6_probe") is not None:
+        targets = plan["ipv6_probe"]["targets"]
+        lines.append("  Planned IPv6 check after confirmation: DAD, gateway NDP, candidate-bound TCP to "
+                     + ", ".join(f"[{target['address']}]:{target['port']}" for target in targets))
     if base["ipv4_gateway_off_link"]:
         lines.append("  IPv4 routing: gateway is outside the prefix; an explicit gateway route is required")
     if base["ipv6_gateway_off_link"]:

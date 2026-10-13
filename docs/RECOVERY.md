@@ -1,9 +1,10 @@
 # Independent recovery
 
 `0.4.0-dev` added an internal recovery supervisor and static network journal;
-`0.5.0-dev` adds verified fresh SSH acknowledgment for isolated fixtures.
+`0.5.0-dev` added verified fresh SSH acknowledgment for isolated fixtures;
+`0.6.0-dev` adds guarded temporary IPv6 checks and independent cleanup.
 The bootstrap wizard remains read-only. Production Base application and
-module/probe wiring are still disabled; there is no bootstrap
+module wiring are still disabled; there is no bootstrap
 `--apply` option or recovery CLI flag that enables them.
 
 ## Independent supervisor
@@ -18,8 +19,9 @@ watched files/inventories, and the initial live network before it permits writes
 | `runs/<id>/worker/` | Private copied Python recovery bundle, independent of checkout and SSH |
 | `supervisor.json` | Checked run/root/unit definitions, bundle hashes, boot generation, deadlines, and phase |
 | `network.json` | Initial interface/address/route state, owned operations, durable intent, and recovery outcomes |
+| `ipv6-probe.json` | Optional candidate contract, unused routing identifiers, per-object ownership/intent, and source-bound TCP evidence |
 | `*-apply.service` | Detached writer; production system root is explicitly rejected |
-| `*-rollback.service` | Stops the owned writer and restores both participants; retries failed recovery |
+| `*-rollback.service` | Stops the owned writer, cleans its probe, restores files/network, and retries failed recovery |
 | `*-rollback.timer` | Monotonic timeout plus UTC calendar deadline and persistent missed-event handling |
 | `*-boot.service` | Restores original files before sysinit/network startup after manager restart |
 
@@ -33,8 +35,8 @@ rollback; an expired deadline stops the writer's entire service cgroup before
 acquiring the shared transaction lock. Only this run's writer is stopped.
 Recovery does not kill the user's SSH process or arbitrary PIDs.
 
-Files and network are attempted even if one participant reports a conflict.
-The active pointer is cleared only when both succeed. A bare file recovery or
+Files, probe cleanup, and network are attempted even if one participant reports a conflict.
+The active pointer is cleared only when all succeed. A bare file recovery or
 commit cannot finalize a supervised run. Failure keeps private recovery data,
 records the incomplete outcome, and blocks another run.
 
@@ -92,8 +94,10 @@ candidate address. Its final files, preserved/reused static network objects,
 guard, and deadlines must still be healthy immediately before terminal commit.
 The older fixture callback cannot bypass an SSH contract.
 [Fresh SSH acknowledgment](SSH_ACKNOWLEDGMENT.md) covers the evidence and failure
-cases. Real Base still needs module health and the temporary IPv6 gateway/external
-probe connected to this lifecycle. There is no unattended production commit.
+cases. A selected [IPv6 probe](IPV6_PROBE.md) must match the permanent candidate
+and gateway, pass, and clean its owned temporary objects before application;
+its completed evidence is rechecked at acknowledgment. Real Base still needs
+module health connected to this lifecycle. There is no unattended production commit.
 
 ## Console recovery
 
@@ -127,6 +131,11 @@ and restored original file bytes rather than only command mocks.
 Additional namespace scenarios exercise real OpenSSH IPv4/IPv6 reconnection,
 sudo caller identity without an environment hint, ControlMaster refusal, and
 automatic rollback without a valid acknowledgment.
+
+Routed IPv6 namespaces additionally exercise completed/failed DAD, blocked
+gateway Echo, link-local and global gateways, fresh/reused candidates, marked
+source-bound TCP, an old working source that cannot mask candidate failure,
+and independent cleanup after worker `SIGKILL` during a probe.
 
 This does not establish real VPS/provider reachability, the full ifupdown
 transition, package failure recovery, or a healthy VPS reboot.
