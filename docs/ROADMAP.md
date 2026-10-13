@@ -28,7 +28,8 @@ Fixture tests verify preservation and repeatability; Debian CI additionally
 uses the real ifupdown parser. Kernel/provider routing and the full effect of
 global hooks/environment sources still need validation before apply.
 Collection and file preparation are complete for this subset. The one final
-confirmation becomes effective only when the transaction engine exists.
+confirmation is effective in the internal Base fixture engine; the public
+wizard remains read-only until production acceptance.
 
 **Acceptance:** collect and stage without target changes; reject unsupported
 ownership; preserve unrelated fragments; show exact file changes, package
@@ -59,6 +60,8 @@ confirmation. A cancelled run leaves target bytes and live networking intact.
 The file layer arrived in `0.3.0-dev`; `0.4.0-dev` adds the independent supervisor
 and owned network journal. `0.5.0-dev` adds [fresh SSH acknowledgment](SSH_ACKNOWLEDGMENT.md);
 `0.6.0-dev` adds the [temporary IPv6 probe](IPV6_PROBE.md).
+`0.7.0-dev` adds [guarded Base fixtures](BASE_APPLICATION.md), runtime hostname,
+native APT, retained-package diagnostics and deferred old-address removal.
 [Independent recovery](RECOVERY.md) describes the Debian/systemd namespace
 scenarios, manager-restart test, fixture-only writer/commit gate, and remaining
 provider/VPS validation. Production Bootstrap apply stays unavailable until
@@ -70,9 +73,12 @@ are preserved. A confirmed healthy transition survives reboot.
 
 ## 3. Base application and IPv6 probe
 
-Implement hostname plus hosts, selected ifupdown stanzas, static DNS, system
-locale and timezone, managed user timezone, normalized APT sources, package
-index refresh, and missing-package installation.
+The internal Base engine now applies hostname plus hosts, selected ifupdown
+stanzas, static DNS, locale/timezones, managed user timezone and normalized APT
+sources, then strict index refresh and missing-package installation. One
+confirmation arms independent recovery before any target writes. Native CI
+checks successful application, APT failure, interrupted APT, retained installed
+packages after recovery and a healthy second run without file rewrites.
 
 The internal temporary IPv6 probe now runs under the armed supervisor before
 permanent file writes: DAD, explicit source/mark binding, gateway routing and
@@ -81,6 +87,11 @@ namespaces cover link-local/global gateways, fresh/reused addresses, blocked
 Echo, duplicate addresses, old-source false positives, and writer death.
 Connect this to the single production Apply confirmation and validate it on a
 disposable VPS after Base/package wiring.
+
+Production acceptance still includes package-owned locale/shell symlinks,
+global APT/ifupdown hooks, provider routing, and full reboot persistence.
+Packages are deliberately never rolled back or repaired automatically;
+unhealthy retained state is reported separately from restored settings.
 
 **Acceptance:** two identical runs produce no duplicate content and no needless
 file rewrites. Test invalid IPv6, DAD failure, blocked gateway Echo, unreachable

@@ -35,9 +35,13 @@ net = sys.modules.get("network_recovery") or peer_module("network_recovery")
 bootstrap = sys.modules.get("bootstrap") or peer_module("bootstrap")
 ssh = sys.modules.get("ssh_session") or peer_module("ssh_session")
 probe = sys.modules.get("ipv6_probe") or peer_module("ipv6_probe")
+host = sys.modules.get("preflight") or peer_module("preflight")
+pkg = sys.modules.get("packages") or peer_module("packages")
+base = sys.modules.get("base_apply") or peer_module("base_apply")
 UNIT_DIRECTORY = Path("/etc/systemd/system")
 SSH_BUNDLE = ("bootstrap.py", "transaction.py", "network_recovery.py", "ssh_session.py", "recovery.py")
-BUNDLE = (*SSH_BUNDLE, "ipv6_probe.py")
+PROBE_BUNDLE = (*SSH_BUNDLE, "ipv6_probe.py")
+BUNDLE = (*PROBE_BUNDLE, "preflight.py", "packages.py", "base_apply.py")
 LEGACY_BUNDLE = ("transaction.py", "network_recovery.py", "recovery.py")
 SAFE_UNIT_PATH = re.compile(r"/[A-Za-z0-9_./-]+\Z")
 
@@ -109,7 +113,9 @@ class RecoverySupervisor:
                  unit_dir: Path = UNIT_DIRECTORY, backend_factory: Callable = net.IPBackend,
                  session_inspector: ssh.SSHInspector | None = None,
                  probe_backend_factory: Callable = probe.ProbeBackend,
-                 probe_connector: probe.TCPConnector | None = None):
+                 probe_connector: probe.TCPConnector | None = None,
+                 package_backend_factory: Callable = pkg.AptBackend,
+                 hostname_backend_factory: Callable = base.HostnameBackend):
         self.manager = manager
         self.systemd = systemd or Systemd()
         self.unit_dir = Path(unit_dir).absolute()
@@ -117,6 +123,7 @@ class RecoverySupervisor:
         self.backend_factory = backend_factory
         self.session_inspector = session_inspector or ssh.SSHInspector()
         self.probe_backend_factory, self.probe_connector = probe_backend_factory, probe_connector
+        self.package_backend_factory, self.hostname_backend_factory = package_backend_factory, hostname_backend_factory
 
     def path(self, run_id: str) -> str:
         self.manager._run_id(run_id)
@@ -132,7 +139,7 @@ class RecoverySupervisor:
                 or type(config.get("timeout")) is not int or not 5 <= config["timeout"] <= 1800
                 or type(config.get("deadline_ns")) is not int or type(config.get("monotonic_deadline_ns")) is not int
                 or config.get("units") != unit_names(run_id) or not isinstance(config.get("bundle_sha256"), dict)
-                or set(config["bundle_sha256"]) not in (set(BUNDLE), set(SSH_BUNDLE), set(LEGACY_BUNDLE))):
+                or set(config["bundle_sha256"]) not in (set(BUNDLE), set(PROBE_BUNDLE), set(SSH_BUNDLE), set(LEGACY_BUNDLE))):
             raise tx.TransactionError("Invalid supervisor configuration")
         net.interface_name(config["interface"])
         expected_texts = unit_texts(run_id, self.manager.state_dir / "runs" / run_id / "worker/recovery.py",
@@ -145,6 +152,10 @@ class RecoverySupervisor:
             self.validate_acknowledgment(config["acknowledgment"])
         if config.get("ipv6_probe") is not None and probe.validate_config(config["ipv6_probe"]) != config["ipv6_probe"]:
             raise tx.TransactionError("Noncanonical IPv6 probe configuration")
+        if config.get("base_apply") is not None:
+            base.validate_config(config["base_apply"])
+            if config.get("acknowledgment") is None:
+                raise tx.TransactionError("Base requires a fresh SSH acknowledgment contract")
         return config
 
     @staticmethod
@@ -189,9 +200,44 @@ class RecoverySupervisor:
                 raise tx.TransactionError("IPv6 probe differs from its armed contract")
             participant.verify_passed_locked()
 
+    def packages(self, run_id: str, config: dict) -> pkg.PackageJournal:
+        backend = self.package_backend_factory(self.manager.fs.root, namespace=config.get("namespace"))
+        return pkg.PackageJournal(self.manager, run_id, backend)
+
+    def hostname(self, run_id: str) -> base.HostnameJournal:
+        return base.HostnameJournal(self.manager, run_id, self.hostname_backend_factory(self.manager.fs.root))
+
+    def status(self, run_id: str) -> dict:
+        result = self.manager.status(run_id)
+        config = self.load(run_id)
+        if config.get("base_apply") is not None:
+            journal = self.packages(run_id, config).load()
+            result["packages"] = {key: journal[key] for key in ("phase", "steps", "manual_attention")}
+            result["packages"]["policy"] = "retained"
+        return result
+
+    def check_guard(self, config: dict) -> None:
+        if (self.systemd.generation() != config["generation"]
+                or time.monotonic_ns() >= config["monotonic_deadline_ns"] or time.time_ns() >= config["deadline_ns"]
+                or not self.systemd.active(config["units"]["timer"])):
+            raise tx.RecoveryError("Independent recovery guard is absent or expired")
+
+    def verify_base(self, run_id: str, config: dict) -> None:
+        if config.get("base_apply") is None:
+            return
+        self.hostname(run_id).verify_locked()
+        self.packages(run_id, config).verify_completed_locked()
+        for entry in config["report"]["files"]:
+            after = entry["after"]
+            expected = (tx.regular(after["content"].encode(), after["mode"], after["uid"], after["gid"])
+                        if after["kind"] == "regular" else {**after, "mode": 0o777})
+            if not tx.same_file(self.manager.fs.snapshot(entry["path"]), expected):
+                raise tx.TransactionError("Base file health changed before acknowledgment: " + entry["path"])
+
     def arm(self, run_id: str, report: dict[str, Any], *, interface: str,
             operations: list[dict[str, Any]], timeout: int = 300, namespace: str | None = None,
-            ssh_targets: list[str] | None = None, ipv6_probe: dict | None = None) -> None:
+            ssh_targets: list[str] | None = None, ipv6_probe: dict | None = None,
+            deferred_operations: list[dict] | None = None, base_apply: dict | None = None) -> None:
         if self.manager.owner != 0 and self.manager.fs.root == Path("/"):
             raise tx.TransactionError("System recovery requires root")
         if namespace is not None and self.manager.fs.root == Path("/"):
@@ -202,6 +248,13 @@ class RecoverySupervisor:
         texts = unit_texts(run_id, worker, self.manager.state_dir, timeout, deadline)
         self.systemd.ready()
         generation = self.systemd.generation()
+        if base_apply is not None:
+            base.validate_config(base_apply)
+            if (base_apply != report.get("base_apply") or ssh_targets is None
+                    or base_apply["operations"] != operations or base_apply["deferred_operations"] != (deferred_operations or [])):
+                raise tx.StalePlan("Base execution differs from its complete reviewed contract")
+        elif report.get("base_apply") is not None:
+            raise tx.TransactionError("A reviewed Base cannot be armed without its Base participants")
         ipv6_probe = probe.validate_config(ipv6_probe) if ipv6_probe is not None else None
         if report.get("ipv6_probe") is not None and report["ipv6_probe"] != ipv6_probe:
             raise tx.StalePlan("IPv6 probe differs from the reviewed host plan")
@@ -212,6 +265,12 @@ class RecoverySupervisor:
                               "origin": self.session_inspector.capture(account, required=False),
                               "ready_ticks": None, "phase": "pending", "evidence": None}
             self.validate_acknowledgment(acknowledgment)
+            if base_apply is not None:
+                original = base_apply["ssh_origin"]
+                armed = acknowledgment["origin"]
+                if (base_apply["account"] != account or (original is None) != (armed is None)
+                        or original is not None and not ssh.same_connection(original, armed)):
+                    raise tx.StalePlan("Original SSH transport or invoking account changed after Base review")
             reviewed_account = report.get("facts", {}).get("account", {})
             if any(reviewed_account.get(key, account[key]) != account[key] for key in account):
                 raise tx.StalePlan("Reviewed invoking account changed before SSH recovery arming")
@@ -230,9 +289,14 @@ class RecoverySupervisor:
                       "deadline_ns": deadline, "monotonic_deadline_ns": time.monotonic_ns() + timeout * 1_000_000_000,
                       "generation": generation, "phase": "arming", "units": unit_names(run_id),
                       "bundle_sha256": {}, "unit_texts": texts, "report": report,
-                      "acknowledgment": acknowledgment, "ipv6_probe": ipv6_probe}
+                      "acknowledgment": acknowledgment, "ipv6_probe": ipv6_probe, "base_apply": base_apply}
             network = self.network(run_id, config)
-            network.prepare_locked(operations)
+            network.prepare_locked(operations, deferred_operations=deferred_operations)
+            if base_apply is not None:
+                if network.load()["before"] != base_apply["network_before"]:
+                    raise tx.StalePlan("Base network changed before arming")
+                self.packages(run_id, config).prepare_locked(base_apply["package_before"])
+                self.hostname(run_id).prepare_locked(base_apply["hostname_before"], base_apply["profile"]["hostname"])
             if acknowledgment is not None or ipv6_probe is not None:
                 projected = {net.identity(obj): obj for obj in network.load()["before"]["objects"]}
                 for operation in network.load()["operations"]:
@@ -323,6 +387,10 @@ class RecoverySupervisor:
             network = self.network(run_id, config)
             if network.backend.snapshot() != network.load()["before"]:
                 raise tx.StalePlan("Live network changed before worker application")
+            if config.get("base_apply") is not None:
+                if (self.packages(run_id, config).backend.inspect() != config["base_apply"]["package_before"]
+                        or self.hostname(run_id).backend.snapshot() != config["base_apply"]["hostname_before"]):
+                    raise tx.StalePlan("Reviewed Base runtime or package state changed before writes")
             participant = self.ipv6_probe(run_id, config)
             if participant is not None:
                 if participant.load()["config"] != config["ipv6_probe"]:
@@ -337,6 +405,12 @@ class RecoverySupervisor:
         self.manager.apply_files(run_id, refresh=lambda: config["report"])
         with self.manager._lock():
             self.network(run_id, config).apply_locked()
+            if config.get("base_apply") is not None:
+                self.check_guard(config)
+                self.hostname(run_id).apply_locked()
+                self.packages(run_id, config).run_locked(guard=lambda: self.check_guard(config))
+                self.verify_base(run_id, config)
+                self.check_guard(config)
             config = self.load(run_id)
             if config.get("acknowledgment") is not None:
                 config["acknowledgment"]["ready_ticks"] = self.session_inspector.ticks()
@@ -375,7 +449,10 @@ class RecoverySupervisor:
                 failures = []
                 participant = self.ipv6_probe(run_id, config)
                 for restore in ([lambda: participant.cleanup_locked(boot=different_boot)] if participant is not None else []) + \
-                               [lambda: network.recover_locked(boot=different_boot)]:
+                               [lambda: network.recover_locked(boot=different_boot)] + \
+                               ([lambda: self.hostname(run_id).recover_locked(boot=different_boot),
+                                 lambda: self.packages(run_id, config).observe_retained_locked()]
+                                if config.get("base_apply") is not None else []):
                     try:
                         restore()
                     except (tx.TransactionError, OSError, ValueError, subprocess.SubprocessError) as error:
@@ -398,10 +475,10 @@ class RecoverySupervisor:
             # Early boot precedes the system bus. Disable units and restore files
             # using the manager's private socket; retain the harmless timer stamp.
             self.cleanup(run_id, config, clean_stamp=not different_boot)
-        return journal
+        return self.status(run_id)
 
     def commit_fixture(self, run_id: str, *, verify: Callable[[], bool]) -> None:
-        """Test lifecycle only. Fresh-SSH acknowledgment for real Base is pending."""
+        """Legacy fixture callbacks cannot bypass Base's required fresh SSH proof."""
         if self.manager.fs.root == Path("/"):
             raise tx.TransactionError("Production acknowledgment is not implemented")
         with self.manager._lock():
@@ -414,6 +491,7 @@ class RecoverySupervisor:
                 raise tx.TransactionError("Health check failed or rollback deadline expired")
             self.network(run_id, config).verify_applied_locked()
             self.verify_probe(run_id, config)
+            self.network(run_id, config).finalize_locked()
             self.manager._commit_locked(run_id, coordinated=True)
             config["phase"] = "committed"
             self.manager._save(self.path(run_id), config)
@@ -462,11 +540,15 @@ class RecoverySupervisor:
             self.verify_bundle(run_id, config)
             evidence = self.acknowledgment_guard(run_id, config)
             self.verify_probe(run_id, config)
+            self.verify_base(run_id, config)
             self.network(run_id, config).verify_applied_locked()
             acknowledgment["phase"], acknowledgment["evidence"] = "acknowledging", evidence
             self.manager._save(self.path(run_id), config)
+            # Fresh transport is proven before removing the old addresses/path.
+            self.network(run_id, config).finalize_locked()
             def final_guard():
                 self.verify_probe(run_id, config)
+                self.verify_base(run_id, config)
                 self.network(run_id, config).verify_applied_locked()
                 if self.acknowledgment_guard(run_id, config) != evidence:
                     raise tx.TransactionError("SSH connection changed before terminal commit")
@@ -516,7 +598,7 @@ def main(argv: list[str] | None = None) -> int:
         elif options.operation == "acknowledge":
             print(json.dumps(supervisor.acknowledge(options.run_id), indent=2))
         else:
-            print(json.dumps(manager.status(options.run_id), indent=2))
+            print(json.dumps(supervisor.status(options.run_id), indent=2))
         return 0
     except (tx.TransactionError, OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"Recovery: {error}", file=sys.stderr)

@@ -340,7 +340,9 @@ class FileTransaction:
         journal = self._load(f"/runs/{run_id}/journal.json")
         if (not isinstance(backup, dict) or backup.get("schema_version") != 1
                 or backup.get("run_id") != run_id or not isinstance(backup.get("files"), list)
-                or not 0 < len(backup["files"]) <= MAX_CHANGED_FILES):
+                or not (0 < len(backup["files"]) <= MAX_CHANGED_FILES
+                        or len(backup["files"]) == 0 and backup.get("nonfile_run") is True)
+                or "nonfile_run" in backup and type(backup["nonfile_run"]) is not bool):
             raise TransactionError("Invalid backup manifest")
         paths = []
         for entry in backup["files"]:
@@ -392,7 +394,8 @@ class FileTransaction:
             if found != expected:
                 raise StalePlan(f"{pattern}: inspected directory inventory changed")
 
-    def prepare(self, report: dict[str, Any], *, refresh: Callable[[], dict[str, Any]]) -> str | None:
+    def prepare(self, report: dict[str, Any], *, refresh: Callable[[], dict[str, Any]],
+                force_run: bool = False) -> str | None:
         """Re-audit under the lock and durably save originals before any target write."""
         report = copy.deepcopy(report)
         if report.get("file_plan_available") is not True or report.get("blockers") != []:
@@ -432,7 +435,9 @@ class FileTransaction:
                 raise TransactionError("Candidate change flag does not match its content or metadata")
             if entry["changed"]:
                 entries.append({"path": path, "after": value})
-        if not entries:
+        if type(force_run) is not bool:
+            raise TransactionError("Invalid non-file transaction selection")
+        if not entries and not force_run:
             try:
                 self.state_dir.lstat()
             except FileNotFoundError:
@@ -460,6 +465,7 @@ class FileTransaction:
             self._directory(self.state_dir / "runs" / run_id, create=True)
             backup = {"schema_version": 1, "run_id": run_id, "created_ns": time.time_ns(),
                       "plan_sha256": plan_digest(report), "files": entries,
+                      "nonfile_run": force_run,
                       "watched_files": watched, "watched_patterns": report.get("watched_patterns", {})}
             self._save(f"/runs/{run_id}/backup.json", backup)
             journal = {"run_id": run_id, "phase": "prepared", "attempted": [],

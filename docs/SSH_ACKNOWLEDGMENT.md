@@ -3,7 +3,8 @@
 `0.5.0-dev` verifies an authenticated new OpenSSH connection before a supervised
 fixture run can commit. The original invoking account is fixed during arming.
 `0.6.0-dev` also requires a selected [IPv6 probe](IPV6_PROBE.md) to have passed
-and cleaned its temporary objects. Production Base application remains disabled
+and cleaned its temporary objects. `0.7.0-dev` adds complete Base health and
+defers old-address removal until acknowledgment. Production Base application remains disabled
 until module health and host transitions are connected; this document does not
 provide a VPS installer command.
 
@@ -51,8 +52,8 @@ addresses are fully parsed; scoped/link-local target input is not accepted.
 The fixture API verifies that these targets exist in its projected final
 address inventory. Profiles cannot supply evidence or executable commands.
 
-Before production wiring, the reviewed Base profile must supply the candidate
-targets and original account. Provider reachability remains a VPS acceptance
+The reviewed Base fixture profile supplies candidate targets and the invoking
+account. Provider reachability remains a VPS acceptance
 requirement even with the internal IPv6 probe. SSH proof for one selected
 family does not validate the other family's Internet path.
 

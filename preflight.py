@@ -656,8 +656,9 @@ def prepare_host_plan(profile: Any, account: Any, plan: dict[str, Any], timezone
             "warnings": warnings, "files": changes,
             "watched_files": {path: state.fingerprint() for path, state in sorted(view.files.items())},
             "watched_patterns": dict(sorted(view.patterns.items())),
-            "package_operations": [["apt-get", "update"], ["apt-get", "install", "--yes", "--no-install-recommends", *facts["missing_base_packages"]]]
-            if facts["missing_base_packages"] else [["apt-get", "update"]]}
+            "package_operations": [list(plan["package_commands"]["update"]),
+                                   [*plan["package_commands"]["install"], *facts["missing_base_packages"]]]
+            if facts["missing_base_packages"] else [list(plan["package_commands"]["update"])]}
 
 
 def format_host_plan(report: dict[str, Any], *, show_diff: bool = False) -> str:

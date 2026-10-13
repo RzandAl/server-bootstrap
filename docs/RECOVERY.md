@@ -2,7 +2,9 @@
 
 `0.4.0-dev` added an internal recovery supervisor and static network journal;
 `0.5.0-dev` added verified fresh SSH acknowledgment for isolated fixtures;
-`0.6.0-dev` adds guarded temporary IPv6 checks and independent cleanup.
+`0.6.0-dev` adds guarded temporary IPv6 checks and independent cleanup;
+`0.7.0-dev` connects reviewed Base fixtures, runtime hostname and retained
+package diagnostics to that guard.
 The bootstrap wizard remains read-only. Production Base application and
 module wiring are still disabled; there is no bootstrap
 `--apply` option or recovery CLI flag that enables them.
@@ -20,6 +22,8 @@ watched files/inventories, and the initial live network before it permits writes
 | `supervisor.json` | Checked run/root/unit definitions, bundle hashes, boot generation, deadlines, and phase |
 | `network.json` | Initial interface/address/route state, owned operations, durable intent, and recovery outcomes |
 | `ipv6-probe.json` | Optional candidate contract, unused routing identifiers, per-object ownership/intent, and source-bound TCP evidence |
+| `hostname.json` | Original runtime hostname and namespace identity, durable write intent, and conflict-aware restoration |
+| `packages.json` | Original/final dpkg inventory, APT step intent/results, retained state and manual-attention flag; no package rollback |
 | `*-apply.service` | Detached writer; production system root is explicitly rejected |
 | `*-rollback.service` | Stops the owned writer, cleans its probe, restores files/network, and retries failed recovery |
 | `*-rollback.timer` | Monotonic timeout plus UTC calendar deadline and persistent missed-event handling |
@@ -35,7 +39,10 @@ rollback; an expired deadline stops the writer's entire service cgroup before
 acquiring the shared transaction lock. Only this run's writer is stopped.
 Recovery does not kill the user's SSH process or arbitrary PIDs.
 
-Files, probe cleanup, and network are attempted even if one participant reports a conflict.
+Files, probe cleanup, network and runtime hostname are attempted even if one
+participant reports a conflict. Package diagnosis is read-only after writer
+stop; unhealthy/unreadable package state is reported for manual attention and
+does not block successful settings recovery.
 The active pointer is cleared only when all succeed. A bare file recovery or
 commit cannot finalize a supervised run. Failure keeps private recovery data,
 records the incomplete outcome, and blocks another run.
@@ -96,7 +103,9 @@ The older fixture callback cannot bypass an SSH contract.
 [Fresh SSH acknowledgment](SSH_ACKNOWLEDGMENT.md) covers the evidence and failure
 cases. A selected [IPv6 probe](IPV6_PROBE.md) must match the permanent candidate
 and gateway, pass, and clean its owned temporary objects before application;
-its completed evidence is rechecked at acknowledgment. Real Base still needs
+its completed evidence is rechecked at acknowledgment. Reviewed Base fixtures
+also require complete file, hostname and package health; old addresses are
+removed only inside fresh acknowledgment. Production Base still needs
 module health connected to this lifecycle. There is no unattended production commit.
 
 ## Console recovery
@@ -137,6 +146,11 @@ gateway Echo, link-local and global gateways, fresh/reused candidates, marked
 source-bound TCP, an old working source that cannot mask candidate failure,
 and independent cleanup after worker `SIGKILL` during a probe.
 
+[Base fixtures](BASE_APPLICATION.md) use copied Debian roots, a real package
+and APT index, isolated UTS hostname namespaces, failed update, deadline
+recovery retaining installed packages, and writer/child interruption. They
+exercise full file/runtime health, fresh SSH and a repeat run without rewrites.
+
 This does not establish real VPS/provider reachability, the full ifupdown
-transition, package failure recovery, or a healthy VPS reboot.
+transition, arbitrary package hooks, or a healthy VPS reboot.
 Those remain release acceptance checks, not claims derived from fixture success.

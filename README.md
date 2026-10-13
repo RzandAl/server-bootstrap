@@ -9,10 +9,11 @@ backups and recovery.
 
 > **Target platform:** Debian 13 (trixie), with ifupdown networking.
 >
-> **Development status:** `0.6.0-dev` provides read-only planning, durable file
-> transactions, independent systemd/network recovery, and verified fresh SSH
-> acknowledgment and temporary IPv6 probing for isolated test roots.
-> Production Base apply, packages, and modules remain pending.
+> **Development status:** `0.7.0-dev` connects the reviewed Base file plan,
+> network transition, runtime hostname, and APT to independent recovery in
+> isolated test roots. Packages are retained after recovery. Fresh SSH
+> acknowledgment and temporary IPv6 probing guard the fixture lifecycle.
+> Production Base apply and module integration remain pending.
 > No production release is available.
 
 ## Highlights
@@ -45,6 +46,10 @@ backups and recovery.
   disarming recovery; a new channel on an old ControlMaster transport is refused.
 - Checks candidate IPv6 DAD, gateway NDP, and source-bound external TCP under
   the independent guard; removes its temporary address/routes/rule before files.
+- Applies reviewed Base fixtures after one effective confirmation; retains old
+  addresses until fresh SSH acknowledgment and checks complete Base health.
+- Journals strict APT update and missing-package installation; restores settings
+  independently and reports retained package state requiring manual attention.
 
 ## Standard profile
 
@@ -80,7 +85,7 @@ require ifupdown and working CA certificates; the existing MOTD installer needs
 | Planner runtime | Linux, Python 3.11 or newer, installed IANA timezone data |
 | Network profiles | Static IPv4, including `/32`; optional static IPv6 |
 | Local validation | Automated parser, host-audit, preservation, and repeat-planning tests |
-| CI | Debian 13 regressions as root/user, ifupdown/systemd parsing, kernel recovery, real OpenSSH reconnects, and routed IPv6 probes |
+| CI | Debian 13 root/user regressions, native Base/APT/hostname fixtures, kernel recovery, real OpenSSH reconnects, and routed IPv6 probes |
 | Live VPS apply | Pending; internal file writes are not connected to the bootstrap CLI |
 
 The account is detected, not selected or created. `USER`, `LOGNAME`, and `HOME`
@@ -91,7 +96,8 @@ profile may omit `user`; if present, it must match that caller.
 Host file planning currently supports static/manual ifupdown on a plain VPS
 Ethernet interface with a regular resolver file. DHCP/SLAAC migrations,
 cloud-init, active alternate managers, custom policy routing, and complex
-ifupdown stanzas stop preflight with an explanation. Apply remains pending.
+ifupdown stanzas stop preflight with an explanation. Locale and
+shell-file symlinks also stop preflight. Production apply remains pending.
 
 ## Quick use
 
@@ -127,7 +133,7 @@ The profile format and a documentation-address example are in
 
 | Module | Scope | Status |
 | --- | --- | --- |
-| Base | Hostname, network, DNS, locale, timezones, APT sources, packages | Host preflight and exact file plan available; apply pending |
+| Base | Hostname, network, DNS, locale, timezones, APT sources, packages | Guarded application verified in isolated roots; production pending |
 | MOTD | [Debian Server Info MOTD](https://github.com/RzandAl/debian-server-info-motd) through its native installer | Pinned integration planned |
 | Firewall | Separate, explicit rules and recovery | Future |
 | VPN | Separate VPN installation and configuration | Future |
@@ -140,6 +146,7 @@ The profile format and a documentation-address example are in
 - [Independent systemd recovery and owned network changes](docs/RECOVERY.md)
 - [Fresh SSH acknowledgment and terminal health checks](docs/SSH_ACKNOWLEDGMENT.md)
 - [Temporary IPv6 checks, success policy, and owned cleanup](docs/IPV6_PROBE.md)
+- [Reviewed Base application and retained-package policy](docs/BASE_APPLICATION.md)
 - [Continuous integration checks](.github/workflows/ci.yml)
 
 ## Tests and validation
@@ -173,6 +180,9 @@ OpenSSH IPv4/IPv6 reconnects, sudo identity, ControlMaster refusal, and early-bo
 recovery after manager restart. Routed IPv6 cases verify actual DAD failure,
 link-local/global gateways, blocked Echo, candidate-bound TCP, a working old
 source with a failing new source, reused addresses, and interrupted-probe cleanup.
+Native Base fixtures additionally check real APT installation, failed update,
+deadline recovery retaining installed packages, an interrupted APT child,
+isolated runtime hostname, fresh SSH completion, and unchanged second-run files.
 Real VPS connectivity and reboot
 validation remain necessary before an apply-capable release is published.
 
