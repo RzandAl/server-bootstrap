@@ -260,6 +260,37 @@ class NativeBaseTests(unittest.TestCase):
         self.assertNotIn("ccze", pkg.installed(pkg.AptBackend(fixture.root).inspect()))
         self.assertFalse(fixture.retained()["manual_attention"])
 
+    def test_worker_waits_for_status_reader_then_cli_recovery_stops_locked_writer(self):
+        fixture = self.fixture(delayed_install=True)
+        command = fixture.supervisor.systemd.command
+        readers = []
+        marker = fixture.directory / "status-reader-ready"
+        code = "import fcntl, sys, time; from pathlib import Path; f=open(sys.argv[1], 'rb'); fcntl.flock(f, fcntl.LOCK_EX); Path(sys.argv[2]).write_text('ready'); time.sleep(0.7)"
+        def with_reader(*arguments, **options):
+            if arguments[:2] == ("start", "--no-block"):
+                reader = subprocess.Popen(["/usr/bin/python3", "-I", "-c", code, str(fixture.manager.state_dir / "lock"), str(marker)])
+                readers.append(reader)
+                kernel.wait_for(marker.is_file, seconds=5)
+            return command(*arguments, **options)
+        fixture.supervisor.systemd.command = with_reader
+        try:
+            fixture.launch()
+            sleeper = fixture.root / "run/rzandal-ci-sleeper.pid"
+            kernel.wait_for(sleeper.is_file, seconds=30)
+            child = int(sleeper.read_text().strip())
+            started = kernel.guard.ssh.parse_stat(Path(f"/proc/{child}/stat").read_text())["start_ticks"]
+            # The real APT writer still holds the common lock. The actual CLI
+            # must read protected metadata and stop that cgroup before locking.
+            result = run(["/usr/bin/python3", "-I", "/opt/bootstrap/recovery.py", "recover", fixture.run_id])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)["phase"], "rolled_back")
+            fixture.assert_restored()
+            record = Path(f"/proc/{child}/stat")
+            self.assertTrue(not record.exists() or kernel.guard.ssh.parse_stat(record.read_text())["start_ticks"] != started)
+        finally:
+            for reader in readers:
+                reader.wait(timeout=5)
+
 
 if __name__ == "__main__":
     unittest.main()

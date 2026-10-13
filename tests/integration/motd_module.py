@@ -43,6 +43,11 @@ class MOTDFixture(fixture_base.BaseFixture):
         self.write("/etc/update-motd.d/05-existing", "#!/bin/bash\nprintf 'Old MOTD\\n'\n")
         (self.root / "etc/update-motd.d/05-existing").chmod(0o751)
         self.write("/etc/ssh/sshd_config.d/99-existing.conf", "PrintLastLog no\n")
+        self.proc = self.root / "proc"
+        self.proc.mkdir(exist_ok=True)
+        fixture_base.run(["mount", "-t", "proc", "-o", "ro,nosuid,nodev,noexec", "proc", str(self.proc)], check=True)
+        mounted = self.proc.stat()
+        self.proc_identity = (mounted.st_dev, mounted.st_ino)
 
     def module_status(self):
         return self.supervisor.status(self.run_id)["motd"]
@@ -61,7 +66,13 @@ class MOTDFixture(fixture_base.BaseFixture):
             if self.run_id is not None:
                 kernel.wait_for(lambda: self.supervisor.recover(self.run_id), seconds=45)
         finally:
-            super().close()
+            try:
+                info = self.proc.stat()
+                if (info.st_dev, info.st_ino) != self.proc_identity:
+                    raise RuntimeError("Owned fixture proc mount was replaced; preserving it")
+                fixture_base.run(["umount", str(self.proc)], check=True)
+            finally:
+                super().close()
 
 
 class NativeMOTDTests(unittest.TestCase):
