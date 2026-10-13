@@ -137,10 +137,15 @@ class ProbeBackend(net.IPBackend):
         return value
 
     def link(self) -> dict:
-        links = self.values(["-6", "address", "show", "dev", self.interface])
+        links = self.values(["link", "show", "dev", self.interface])
         if len(links) != 1 or links[0].get("ifname") != self.interface or "UP" not in links[0].get("flags", []):
             raise tx.RecoveryError("IPv6 probe interface is absent or no longer UP")
         value = links[0]
+        if (type(value.get("ifindex")) is not int or value["ifindex"] <= 0
+                or type(value.get("mtu")) is not int or value["mtu"] <= 0
+                or not isinstance(value.get("address"), str)
+                or not re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", value["address"])):
+            raise tx.RecoveryError("IPv6 probe interface identity is incomplete")
         return {"ifindex": value["ifindex"], "ifname": self.interface, "address": value["address"], "mtu": value["mtu"]}
 
     def all_routes(self) -> list[dict]:
