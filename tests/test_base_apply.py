@@ -303,6 +303,33 @@ class BaseTests(unittest.TestCase):
         self.supervisor.recover(self.run_id)
         self.restored()
 
+    def test_guard_is_rechecked_under_file_lock_before_any_permanent_write(self):
+        self.launch()
+        verify = self.manager._verify_watched
+        def expires(backup):
+            verify(backup)
+            self.systemd.active_units.clear()
+        with mock.patch.object(self.manager, "_verify_watched", expires):
+            with self.assertRaises(tx.RecoveryError):
+                self.supervisor.apply_fixture(self.run_id)
+        self.assertEqual(self.manager._run(self.run_id)[1]["attempted"], [])
+        self.assertEqual(self.ip.calls + self.hostname.calls + self.packages.calls, [])
+        self.supervisor.recover(self.run_id)
+        self.restored()
+
+    def test_guard_is_rechecked_before_network_changes_after_files(self):
+        self.launch()
+        apply = self.manager.apply_files
+        def expires(*arguments, **options):
+            apply(*arguments, **options)
+            self.systemd.active_units.clear()
+        with mock.patch.object(self.manager, "apply_files", expires):
+            with self.assertRaises(tx.RecoveryError):
+                self.supervisor.apply_fixture(self.run_id)
+        self.assertEqual(self.ip.calls + self.hostname.calls + self.packages.calls, [])
+        self.supervisor.recover(self.run_id)
+        self.restored()
+
     def test_production_target_remains_gated_before_a_confirmation(self):
         manager = mock.Mock()
         manager.fs.root = Path("/")
