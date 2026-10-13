@@ -38,10 +38,12 @@ probe = sys.modules.get("ipv6_probe") or peer_module("ipv6_probe")
 host = sys.modules.get("preflight") or peer_module("preflight")
 pkg = sys.modules.get("packages") or peer_module("packages")
 base = sys.modules.get("base_apply") or peer_module("base_apply")
+motd = sys.modules.get("motd") or peer_module("motd")
 UNIT_DIRECTORY = Path("/etc/systemd/system")
 SSH_BUNDLE = ("bootstrap.py", "transaction.py", "network_recovery.py", "ssh_session.py", "recovery.py")
 PROBE_BUNDLE = (*SSH_BUNDLE, "ipv6_probe.py")
-BUNDLE = (*PROBE_BUNDLE, "preflight.py", "packages.py", "base_apply.py")
+BASE_BUNDLE = (*PROBE_BUNDLE, "preflight.py", "packages.py", "base_apply.py")
+BUNDLE = (*BASE_BUNDLE, "motd.py")
 LEGACY_BUNDLE = ("transaction.py", "network_recovery.py", "recovery.py")
 SAFE_UNIT_PATH = re.compile(r"/[A-Za-z0-9_./-]+\Z")
 
@@ -53,7 +55,12 @@ def unit_names(run_id: str) -> dict[str, str]:
             "timer": prefix + "-rollback.timer", "boot": prefix + "-boot.service"}
 
 
-def unit_texts(run_id: str, worker: Path, state_dir: Path, timeout: int, deadline_ns: int) -> dict[str, str]:
+def module_unit(run_id: str) -> str:
+    tx.FileTransaction._run_id(run_id)
+    return "rzandal-bootstrap-" + run_id + "-motd.service"
+
+
+def unit_texts(run_id: str, worker: Path, state_dir: Path, timeout: int, deadline_ns: int, *, with_motd: bool = False) -> dict[str, str]:
     for path in (worker, state_dir):
         if not SAFE_UNIT_PATH.fullmatch(str(path)):
             raise tx.TransactionError("Recovery paths must not contain systemd expansions or quoting characters")
@@ -66,7 +73,7 @@ def unit_texts(run_id: str, worker: Path, state_dir: Path, timeout: int, deadlin
               "WorkingDirectory=/\nEnvironment=PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n"
               "StandardOutput=journal\nStandardError=journal\nTimeoutStopSec=3s\nKillMode=control-group\n")
     calendar = datetime.fromtimestamp((deadline_ns + 999_999_999) // 1_000_000_000, timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    return {
+    texts = {
         units["apply"]: f"[Unit]\nDescription=RzandAl supervised file/network worker {run_id}\nOnFailure={units['rollback']}\nStartLimitIntervalSec=0\n\n"
                         + common + f"TimeoutStartSec={timeout + 5}s\nExecStart={command} _apply {run_id}\n",
         units["rollback"]: f"[Unit]\nDescription=RzandAl independent rollback {run_id}\nStartLimitIntervalSec=0\n\n"
@@ -77,6 +84,11 @@ def unit_texts(run_id: str, worker: Path, state_dir: Path, timeout: int, deadlin
                        f"After=local-fs.target\nBefore=sysinit.target network-pre.target networking.service systemd-networkd.service NetworkManager.service\n"
                        f"RequiresMountsFor={state_dir}\nStartLimitIntervalSec=0\n\n" + common
                        + f"TimeoutStartSec=90s\nExecStart={command} _boot {run_id}\n\n[Install]\nWantedBy=sysinit.target\n"}
+    if with_motd:
+        texts[module_unit(run_id)] = (f"[Unit]\nDescription=RzandAl native MOTD after Base commit {run_id}\n"
+                                     f"OnFailure={units['rollback']}\nStartLimitIntervalSec=0\n\n" + common
+                                     + f"TimeoutStartSec=180s\nExecStart={command} _motd {run_id}\n")
+    return texts
 
 
 class Systemd:
@@ -115,7 +127,8 @@ class RecoverySupervisor:
                  probe_backend_factory: Callable = probe.ProbeBackend,
                  probe_connector: probe.TCPConnector | None = None,
                  package_backend_factory: Callable = pkg.AptBackend,
-                 hostname_backend_factory: Callable = base.HostnameBackend):
+                 hostname_backend_factory: Callable = base.HostnameBackend,
+                 motd_backend_factory: Callable = motd.NativeBackend):
         self.manager = manager
         self.systemd = systemd or Systemd()
         self.unit_dir = Path(unit_dir).absolute()
@@ -124,6 +137,7 @@ class RecoverySupervisor:
         self.session_inspector = session_inspector or ssh.SSHInspector()
         self.probe_backend_factory, self.probe_connector = probe_backend_factory, probe_connector
         self.package_backend_factory, self.hostname_backend_factory = package_backend_factory, hostname_backend_factory
+        self.motd_backend_factory = motd_backend_factory
 
     def path(self, run_id: str) -> str:
         self.manager._run_id(run_id)
@@ -139,11 +153,11 @@ class RecoverySupervisor:
                 or type(config.get("timeout")) is not int or not 5 <= config["timeout"] <= 1800
                 or type(config.get("deadline_ns")) is not int or type(config.get("monotonic_deadline_ns")) is not int
                 or config.get("units") != unit_names(run_id) or not isinstance(config.get("bundle_sha256"), dict)
-                or set(config["bundle_sha256"]) not in (set(BUNDLE), set(PROBE_BUNDLE), set(SSH_BUNDLE), set(LEGACY_BUNDLE))):
+                or set(config["bundle_sha256"]) not in (set(BUNDLE), set(BASE_BUNDLE), set(PROBE_BUNDLE), set(SSH_BUNDLE), set(LEGACY_BUNDLE))):
             raise tx.TransactionError("Invalid supervisor configuration")
         net.interface_name(config["interface"])
         expected_texts = unit_texts(run_id, self.manager.state_dir / "runs" / run_id / "worker/recovery.py",
-                                   self.manager.state_dir, config["timeout"], config["deadline_ns"])
+                                   self.manager.state_dir, config["timeout"], config["deadline_ns"], with_motd=config.get("motd_plan") is not None)
         if config.get("unit_texts") != expected_texts:
             raise tx.TransactionError("Recovery unit definitions do not match the saved run")
         if config.get("namespace") is not None and self.manager.fs.root == Path("/"):
@@ -156,6 +170,13 @@ class RecoverySupervisor:
             base.validate_config(config["base_apply"])
             if config.get("acknowledgment") is None:
                 raise tx.TransactionError("Base requires a fresh SSH acknowledgment contract")
+        selected = config.get("base_apply", {}).get("profile", {}).get("motd", False) if config.get("base_apply") is not None else False
+        if selected != (config.get("motd_plan") is not None):
+            raise tx.TransactionError("MOTD selection differs from the armed Base plan")
+        if config.get("motd_plan") is not None:
+            motd.validate_plan(config["motd_plan"])
+            if config["motd_plan"] != config["report"].get("motd_plan") or set(config["bundle_sha256"]) != set(BUNDLE):
+                raise tx.TransactionError("MOTD requires its complete reviewed plan and private worker")
         return config
 
     @staticmethod
@@ -207,6 +228,14 @@ class RecoverySupervisor:
     def hostname(self, run_id: str) -> base.HostnameJournal:
         return base.HostnameJournal(self.manager, run_id, self.hostname_backend_factory(self.manager.fs.root))
 
+    def motd_module(self, run_id: str, config: dict) -> motd.Module | None:
+        if config.get("motd_plan") is None:
+            return None
+        module = motd.Module(self.manager, run_id, self.motd_backend_factory(self.manager.fs.root, namespace=config.get("namespace")))
+        if module.load()["plan"] != config["motd_plan"]:
+            raise tx.TransactionError("MOTD journal differs from the armed reviewed plan")
+        return module
+
     def status(self, run_id: str) -> dict:
         result = self.manager.status(run_id)
         config = self.load(run_id)
@@ -214,6 +243,9 @@ class RecoverySupervisor:
             journal = self.packages(run_id, config).load()
             result["packages"] = {key: journal[key] for key in ("phase", "steps", "manual_attention")}
             result["packages"]["policy"] = "retained"
+        module = self.motd_module(run_id, config)
+        if module is not None:
+            result["motd"] = module.status()
         return result
 
     def check_guard(self, config: dict) -> None:
@@ -245,7 +277,12 @@ class RecoverySupervisor:
         worker_dir = self.manager.state_dir / "runs" / run_id / "worker"
         worker = worker_dir / "recovery.py"
         deadline = time.time_ns() + timeout * 1_000_000_000
-        texts = unit_texts(run_id, worker, self.manager.state_dir, timeout, deadline)
+        motd_plan = report.get("motd_plan")
+        if motd_plan is not None:
+            motd.validate_plan(motd_plan)
+        if (motd_plan is not None) != (base_apply is not None and base_apply.get("profile", {}).get("motd") is True):
+            raise tx.TransactionError("A selected MOTD requires its reviewed Base and native module plan")
+        texts = unit_texts(run_id, worker, self.manager.state_dir, timeout, deadline, with_motd=motd_plan is not None)
         self.systemd.ready()
         generation = self.systemd.generation()
         if base_apply is not None:
@@ -289,7 +326,7 @@ class RecoverySupervisor:
                       "deadline_ns": deadline, "monotonic_deadline_ns": time.monotonic_ns() + timeout * 1_000_000_000,
                       "generation": generation, "phase": "arming", "units": unit_names(run_id),
                       "bundle_sha256": {}, "unit_texts": texts, "report": report,
-                      "acknowledgment": acknowledgment, "ipv6_probe": ipv6_probe, "base_apply": base_apply}
+                      "acknowledgment": acknowledgment, "ipv6_probe": ipv6_probe, "base_apply": base_apply, "motd_plan": motd_plan}
             network = self.network(run_id, config)
             network.prepare_locked(operations, deferred_operations=deferred_operations)
             if base_apply is not None:
@@ -297,6 +334,8 @@ class RecoverySupervisor:
                     raise tx.StalePlan("Base network changed before arming")
                 self.packages(run_id, config).prepare_locked(base_apply["package_before"])
                 self.hostname(run_id).prepare_locked(base_apply["hostname_before"], base_apply["profile"]["hostname"])
+            if motd_plan is not None:
+                motd.Module(self.manager, run_id, self.motd_backend_factory(self.manager.fs.root, namespace=namespace)).prepare_locked(motd_plan)
             if acknowledgment is not None or ipv6_probe is not None:
                 projected = {net.identity(obj): obj for obj in network.load()["before"]["objects"]}
                 for operation in network.load()["operations"]:
@@ -331,6 +370,8 @@ class RecoverySupervisor:
             self.manager._save(self.path(run_id), config)
             journal["supervised"] = True
             self.manager._save(f"/runs/{run_id}/journal.json", journal)
+            if motd_plan is not None:
+                self.manager._reserve_module(run_id)
             for name, text in texts.items():
                 self.units_fs.replace("/" + name, tx.regular(text.encode(), 0o644, self.manager.owner, self.manager.group),
                                       expected=tx.fingerprint({"kind": "absent"}))
@@ -391,6 +432,9 @@ class RecoverySupervisor:
                 if (self.packages(run_id, config).backend.inspect() != config["base_apply"]["package_before"]
                         or self.hostname(run_id).backend.snapshot() != config["base_apply"]["hostname_before"]):
                     raise tx.StalePlan("Reviewed Base runtime or package state changed before writes")
+            module = self.motd_module(run_id, config)
+            if module is not None:
+                module.verify_before_locked()
             participant = self.ipv6_probe(run_id, config)
             if participant is not None:
                 if participant.load()["config"] != config["ipv6_probe"]:
@@ -417,14 +461,17 @@ class RecoverySupervisor:
                 config["acknowledgment"]["phase"] = "waiting"
                 self.manager._save(self.path(run_id), config)
 
-    def cleanup(self, run_id: str, config: dict[str, Any], *, clean_stamp: bool = True) -> None:
+    def cleanup(self, run_id: str, config: dict[str, Any], *, clean_stamp: bool = True, keep_motd: bool = False) -> None:
         # Stop/disable only names generated for this run. Do not stop this recovery
         # service from inside itself; it exits normally after cleanup.
         self.systemd.command("disable", "--now", config["units"]["timer"], allow_missing=True)
-        self.systemd.command("disable", config["units"]["boot"], allow_missing=True)
+        if not keep_motd:
+            self.systemd.command("disable", config["units"]["boot"], allow_missing=True)
         if clean_stamp:
             self.systemd.command("clean", "--what=state", config["units"]["timer"], allow_missing=True)
         for name, text in config["unit_texts"].items():
+            if keep_motd and name in {config["units"]["boot"], config["units"]["rollback"], module_unit(run_id)}:
+                continue
             current = self.units_fs.snapshot("/" + name)
             if current["kind"] == "absent":
                 continue
@@ -433,6 +480,8 @@ class RecoverySupervisor:
                 raise tx.RecoveryError("External recovery-unit edit preserved for manual review")
             self.units_fs.replace("/" + name, {"kind": "absent"}, expected=tx.fingerprint(current))
         self.systemd.command("daemon-reload")
+        if not keep_motd and config.get("motd_plan") is not None:
+            self.manager._clear_module(run_id)
 
     def recover(self, run_id: str, *, boot: bool = False) -> dict[str, Any]:
         config = self.load(run_id)
@@ -440,6 +489,8 @@ class RecoverySupervisor:
         if boot and not different_boot:
             raise tx.TransactionError("Boot recovery may not discard a current boot's network journal")
         self.systemd.command("stop", config["units"]["apply"], allow_missing=True)
+        if config.get("motd_plan") is not None:
+            self.systemd.command("stop", module_unit(run_id), allow_missing=True)
         with self.manager._lock():
             config = self.load(run_id)
             # Both restorations run even if one fails. The active pointer is cleared
@@ -468,6 +519,9 @@ class RecoverySupervisor:
                 self.manager._save(self.path(run_id), config)
                 raise
             config["phase"] = journal["phase"]
+            module = self.motd_module(run_id, config)
+            if module is not None:
+                module.observe_locked(journal["phase"])
             acknowledgment = config.get("acknowledgment")
             if acknowledgment is not None:
                 acknowledgment["phase"] = "acknowledged" if journal["phase"] == "committed" else "rolled_back"
@@ -532,7 +586,11 @@ class RecoverySupervisor:
             if journal["phase"] == "committed" and acknowledgment["phase"] in {"acknowledging", "acknowledged"}:
                 acknowledgment["phase"] = "acknowledged"
                 self.manager._save(self.path(run_id), config)
-                self.cleanup(run_id, config)
+                module = self.motd_module(run_id, config)
+                keep = module is not None and module.load()["phase"] not in motd.TERMINAL
+                self.cleanup(run_id, config, keep_motd=keep)
+                # The first acknowledgment queued the only native writer. A
+                # repeated acknowledgment never starts or retries it.
                 return journal
             if (self.manager._active() != run_id or journal["phase"] != "applied"
                     or config["phase"] != "started" or acknowledgment["phase"] not in {"waiting", "acknowledging"}):
@@ -542,6 +600,9 @@ class RecoverySupervisor:
             self.verify_probe(run_id, config)
             self.verify_base(run_id, config)
             self.network(run_id, config).verify_applied_locked()
+            module = self.motd_module(run_id, config)
+            if module is not None:
+                module.verify_before_locked()
             acknowledgment["phase"], acknowledgment["evidence"] = "acknowledging", evidence
             self.manager._save(self.path(run_id), config)
             # Fresh transport is proven before removing the old addresses/path.
@@ -550,13 +611,47 @@ class RecoverySupervisor:
                 self.verify_probe(run_id, config)
                 self.verify_base(run_id, config)
                 self.network(run_id, config).verify_applied_locked()
+                if module is not None:
+                    module.verify_before_locked()
                 if self.acknowledgment_guard(run_id, config) != evidence:
                     raise tx.TransactionError("SSH connection changed before terminal commit")
             self.manager._commit_locked(run_id, coordinated=True, before_commit=final_guard)
             config["phase"], acknowledgment["phase"] = "committed", "acknowledged"
             self.manager._save(self.path(run_id), config)
+            if module is not None:
+                module.queue_locked()
+            self.cleanup(run_id, config, keep_motd=module is not None)
+            journal = self.manager._run(run_id)[1]
+        if module is not None:
+            try:
+                self.systemd.command("start", "--no-block", module_unit(run_id))
+            except (tx.TransactionError, OSError, ValueError, subprocess.SubprocessError):
+                self.recover(run_id)  # Committed Base stays committed; report module interruption.
+                raise
+        return journal
+
+    def apply_motd_fixture(self, run_id: str) -> None:
+        if self.manager.fs.root == Path("/"):
+            raise tx.TransactionError("Production MOTD module application remains gated")
+        with self.manager._lock():
+            config = self.load(run_id)
+            self.verify_bundle(run_id, config)
+            module = self.motd_module(run_id, config)
+            _, journal = self.manager._run(run_id)
+            if (module is None or journal["phase"] != "committed" or config["phase"] != "committed"
+                    or config["acknowledgment"]["phase"] != "acknowledged"):
+                raise tx.TransactionError("Native MOTD may run only after Base fresh SSH commit")
+            if module.load()["phase"] in motd.TERMINAL:
+                return
+            try:
+                self.verify_base(run_id, config)
+                self.network(run_id, config).verify_applied_locked()
+                module.run_locked()
+            except (tx.TransactionError, OSError, ValueError) as error:
+                module.fail_locked(str(error))
+            # A timeout/unhandled worker death leaves durable running intent and
+            # triggers the independent observer, after the whole cgroup stops.
             self.cleanup(run_id, config)
-            return self.manager._run(run_id)[1]
 
 
 def cli_manager(run_id: str) -> tx.FileTransaction:
@@ -579,7 +674,7 @@ def cli_manager(run_id: str) -> tx.FileTransaction:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Inspect or recover a supervised run; production Base apply is unavailable.")
-    parser.add_argument("operation", choices=("status", "recover", "acknowledge", "_apply", "_boot"))
+    parser.add_argument("operation", choices=("status", "recover", "acknowledge", "_apply", "_boot", "_motd"))
     parser.add_argument("run_id")
     options = parser.parse_args(argv)
     try:
@@ -587,12 +682,14 @@ def main(argv: list[str] | None = None) -> int:
             raise tx.TransactionError("Supervised system recovery requires root")
         manager = cli_manager(options.run_id)
         supervisor = RecoverySupervisor(manager)
-        if options.operation in {"_apply", "_boot"}:
+        if options.operation in {"_apply", "_boot", "_motd"}:
             if Path(__file__).absolute() != manager.state_dir / "runs" / options.run_id / "worker/recovery.py":
                 raise tx.TransactionError("Internal worker operations require the protected installed bundle")
             supervisor.verify_bundle(options.run_id, supervisor.load(options.run_id))
         if options.operation == "_apply":
             supervisor.apply_fixture(options.run_id)
+        elif options.operation == "_motd":
+            supervisor.apply_motd_fixture(options.run_id)
         elif options.operation in {"recover", "_boot"}:
             print(json.dumps(supervisor.recover(options.run_id, boot=options.operation == "_boot"), indent=2))
         elif options.operation == "acknowledge":

@@ -35,7 +35,18 @@ BASE_PACKAGES = (
 APT_UPDATE = ("apt-get", "-o", "APT::Update::Error-Mode=any", "update")
 APT_INSTALL = ("apt-get", "install", "--yes", "--no-install-recommends", "--no-upgrade", "--no-remove")
 MOTD_REPOSITORY = "RzandAl/debian-server-info-motd"
-MOTD_SOURCE_REF = "v0.3.1"
+MOTD_SOURCE_REF = "v0.4.0"
+MOTD_RELEASE = {
+    "repository": MOTD_REPOSITORY, "source_ref": MOTD_SOURCE_REF,
+    "commit": "5aa02b8ec48feca8cf0be10d65df79da77d1bb62", "version": "0.4.0",
+    "files": {
+        "install.sh": "bb6e90036d39672e851ea28412436a867b21cc7ef79d9abd133c51f7ec78af52",
+        "VERSION": "40b8eb4000a913a7791090535f291d3d369874162a89ef3c9e3d4e887a1b9e79",
+        "SHA256SUMS": "b2cab4f0debd4e321d38072c3c142b4521d58cd4abc7e0129a0a794ddfbeac43",
+        "etc/update-motd.d/10-server-info": "5ff9294ac0b964750d2cf37348931bbd762057075111d714c2ae6200a774f2ad",
+        "usr/local/bin/server-info": "90349b756912a4587abc87452d4b64bd50acab2d2aed4687fb9ee51b47259cd2",
+    },
+}
 APT_SOURCES = (
     "deb https://deb.debian.org/debian trixie main non-free-firmware",
     "deb https://security.debian.org/debian-security trixie-security main non-free-firmware",
@@ -255,7 +266,7 @@ def build_plan(profile: Profile) -> dict[str, Any]:
         },
         "modules": {
             "motd": {"selected": profile.motd, "repository": MOTD_REPOSITORY,
-                     "source_ref": MOTD_SOURCE_REF, "apply_available": False},
+                     "source_ref": MOTD_SOURCE_REF, "commit": MOTD_RELEASE["commit"], "apply_available": False},
             "firewall": {"selected": False, "status": "planned"},
             "vpn": {"selected": False, "status": "planned"},
         },

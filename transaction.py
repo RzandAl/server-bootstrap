@@ -31,6 +31,7 @@ MAX_STATE_BYTES = 32 * MAX_FILE_BYTES
 MAX_CHANGED_FILES = 128
 RUN_ID = re.compile(r"[0-9a-f]{32}\Z")
 FINAL_PHASES = {"committed", "rolled_back"}
+MODULE_FINAL_PHASES = {"completed", "failed", "interrupted", "cancelled"}
 PHASES = FINAL_PHASES | {"prepared", "applying", "applied", "rolling_back", "recovery_failed"}
 FINGERPRINT_KEYS = ("kind", "sha256", "target", "mode", "uid", "gid", "inode", "device", "mtime_ns")
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -376,12 +377,41 @@ class FileTransaction:
             self.store.replace("/active.json", {"kind": "absent"}, expected=fingerprint(current))
 
     def _available(self) -> None:
+        module = self._module_active()
+        if module is not None:
+            value = self._load(f"/runs/{module}/motd.json")
+            if value.get("run_id") != module or value.get("phase") not in MODULE_FINAL_PHASES:
+                raise BusyRun(f"Run {module} has an unresolved MOTD module; inspect or recover it before another run")
+            self._clear_module(module)
         active = self._active()
         if active is not None:
             _, journal = self._run(active)
             if journal["phase"] not in FINAL_PHASES:
                 raise BusyRun(f"Run {active} needs recovery before another run can start")
             self._clear(active)
+
+    def _module_active(self) -> str | None:
+        if self.store.snapshot("/module-active.json")["kind"] == "absent":
+            return None
+        value = self._load("/module-active.json")
+        if not isinstance(value, dict) or set(value) != {"run_id"}:
+            raise TransactionError("Invalid active module pointer")
+        self._run_id(value["run_id"])
+        return value["run_id"]
+
+    def _reserve_module(self, run_id: str) -> None:
+        self._run_id(run_id)
+        if self._active() != run_id or self._module_active() is not None:
+            raise BusyRun("MOTD module needs its active Base reservation")
+        self._save("/module-active.json", {"run_id": run_id})
+
+    def _clear_module(self, run_id: str) -> None:
+        current = self._module_active()
+        if current is not None and current != run_id:
+            raise TransactionError("Another module's reservation must be preserved")
+        if current == run_id:
+            before = self.store.snapshot("/module-active.json")
+            self.store.replace("/module-active.json", {"kind": "absent"}, expected=fingerprint(before))
 
     def _verify_watched(self, report: dict[str, Any]) -> None:
         for path, expected in report["watched_files"].items():
