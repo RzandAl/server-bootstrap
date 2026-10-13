@@ -307,6 +307,22 @@ class ProbeTests(unittest.TestCase):
 
 
 class ProbeParserTests(unittest.TestCase):
+    def test_link_identity_uses_link_inventory_when_ipv6_address_output_omits_mac(self):
+        backend = probe.ProbeBackend("ens3")
+        identity = {"ifindex": 12, "ifname": "ens3", "address": "02:00:00:00:00:01", "mtu": 1500}
+        def inventory(arguments):
+            if "link" in arguments:
+                return json.dumps([{**identity, "flags": ["UP", "LOWER_UP"]}])
+            return json.dumps([{"ifindex": 12, "ifname": "ens3", "flags": ["UP"], "addr_info": []}])
+        with mock.patch.object(backend, "command", side_effect=inventory):
+            self.assertEqual(backend.link(), identity)
+
+    def test_incomplete_link_identity_is_a_recovery_error(self):
+        backend = probe.ProbeBackend("ens3")
+        with mock.patch.object(backend, "command", return_value=json.dumps([{"ifindex": 12, "ifname": "ens3", "flags": ["UP"]}])):
+            with self.assertRaisesRegex(tx.RecoveryError, "identity is incomplete"):
+                backend.link()
+
     def test_read_only_plan_discloses_targets_and_ipv4_only_has_no_probe(self):
         values = {"schema_version": 1, "hostname": "fixture", "interface": "ens3", "ipv4_cidr": "192.0.2.10/32",
                   "ipv4_gateway": "198.51.100.1", "ipv6_enabled": True, "ipv6_cidr": CONFIG["cidr"],
