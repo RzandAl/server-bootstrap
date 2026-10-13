@@ -35,9 +35,9 @@ class MOTDFixture(fixture_base.BaseFixture):
                                for p in ("VERSION", motd.PAYLOAD, motd.COMMAND))
             (self.source_dir / "SHA256SUMS").write_text(manifest)
             release["files"] = {p: hashlib.sha256((self.source_dir / p).read_bytes()).hexdigest() for p in motd.FILES}
-        self.source = motd.ReleaseSource(self.source_dir, release=release)
+        self.motd_source = motd.ReleaseSource(self.source_dir, release=release)
         self.backend = motd.NativeBackend(self.root, namespace=self.kernel.namespace)
-        self.motd_review = {"motd_source": self.source, "motd_backend": self.backend}
+        self.motd_review = {"motd_source": self.motd_source, "motd_backend": self.backend}
         self.write("/etc/motd", "Original MOTD\n")
         self.write("/etc/issue", "Debian 13 fixture\n")
         self.write("/etc/update-motd.d/05-existing", "#!/bin/bash\nprintf 'Old MOTD\\n'\n")
@@ -97,7 +97,7 @@ class NativeMOTDTests(unittest.TestCase):
         manual = fixture.backend.command(["/usr/sbin/chroot", str(fixture.root), "/usr/local/bin/server-info"], timeout=10)
         self.assertEqual(manual["returncode"], 0, manual["errors"])
         self.assertIn("rzandal-ci-base running", manual["output"])
-        health = fixture.backend.check(fixture.source)
+        health = fixture.backend.check(fixture.motd_source)
         self.assertTrue(motd.desired_health(health, bootstrap.MOTD_RELEASE))
         module_before = motd.inventory(fixture.root)
         base_before = fixture.base_snapshot()
