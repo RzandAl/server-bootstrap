@@ -96,7 +96,9 @@ def objects(config: dict, allocation: dict, *, reused: bool) -> list[dict]:
              "pref": "medium", "table": allocation["table"]}
     return [
         {"kind": "address", "cidr": config["cidr"], "mode": "regular" if reused else "probe"},
-        {**route, "dst": config["gateway"] + "/128", "scope": "link"},
+        # IPv6 rtnetlink routes have global scope even for a direct host route;
+        # reachability is expressed by dev and the absence of a gateway.
+        {**route, "dst": config["gateway"] + "/128", "scope": "global"},
         {**route, "dst": "::/0", "scope": "global", "gateway": config["gateway"]},
         {"kind": "rule", "priority": allocation["priority"], "source": source + "/128",
          "mark": allocation["mark"], "mask": 0xffffffff, "table": allocation["table"], "protocol": "static"},
