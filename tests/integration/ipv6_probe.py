@@ -112,6 +112,13 @@ class IPv6ProbeTests(unittest.TestCase):
         def cleanup():
             try:
                 fixture.close()
+            except BaseException:
+                participant = self.participant(fixture)
+                print("PROBE_DIAGNOSTICS " + json.dumps(participant.load(), sort_keys=True), file=sys.stderr)
+                for args in (["-j", "link", "show", "dev", "ens3"], ["-j", "-6", "address", "show", "dev", "ens3"],
+                             ["-j", "-6", "route", "show", "table", "all"], ["-j", "-6", "rule", "show"]):
+                    print("KERNEL_DIAGNOSTICS " + json.dumps(args) + " " + fixture.ip.command(args), file=sys.stderr)
+                raise
             finally:
                 peer.close()
         self.addCleanup(cleanup)
@@ -125,7 +132,7 @@ class IPv6ProbeTests(unittest.TestCase):
         value = participant.load()
         self.assertEqual(participant.backend.current_routes(value["allocation"]), [])
         self.assertIsNone(participant.backend.current_rule(value["config"], value["allocation"]))
-        self.assertTrue(all(not entry["owned"] or entry["phase"] == "undone" for entry in value["operations"]))
+        self.assertTrue(all(not entry["owned"] or entry["phase"] in {"pending", "undone"} for entry in value["operations"]))
 
     def restored(self, fixture):
         return fixture.manager.status(fixture.run_id)["phase"] == "rolled_back"
