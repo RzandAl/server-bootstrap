@@ -425,6 +425,11 @@ class RecoverySupervisor:
                 or time.monotonic_ns() >= config["monotonic_deadline_ns"]):
             raise tx.RecoveryError("Recovery guard is absent, expired, or belongs to another boot")
         with self.manager._lock():
+            config = self.load(run_id)
+            self.check_guard(config)
+            _, journal = self.manager._run(run_id)
+            if self.manager._active() != run_id or journal["phase"] != "prepared" or config["phase"] != "started":
+                raise tx.RecoveryError("Worker run changed while waiting for its lock")
             network = self.network(run_id, config)
             if network.backend.snapshot() != network.load()["before"]:
                 raise tx.StalePlan("Live network changed before worker application")
@@ -446,8 +451,11 @@ class RecoverySupervisor:
                 or time.time_ns() >= config["deadline_ns"]
                 or not self.systemd.active(config["units"]["timer"])):
             raise tx.RecoveryError("Independent guard expired before permanent file application")
-        self.manager.apply_files(run_id, refresh=lambda: config["report"])
+        self.manager.apply_files(run_id, refresh=lambda: config["report"],
+                                 before_apply=lambda: self.check_guard(self.load(run_id)))
         with self.manager._lock():
+            config = self.load(run_id)
+            self.check_guard(config)
             self.network(run_id, config).apply_locked()
             if config.get("base_apply") is not None:
                 self.check_guard(config)
@@ -654,22 +662,33 @@ class RecoverySupervisor:
             self.cleanup(run_id, config)
 
 
-def cli_manager(run_id: str) -> tx.FileTransaction:
+def cli_manager(run_id: str, *, lock_timeout: float = 0) -> tx.FileTransaction:
     tx.FileTransaction._run_id(run_id)
     script = Path(__file__).absolute()
     deployed = script.parent.name == "worker" and script.parent.parent.name == run_id and script.parent.parent.parent.name == "runs"
     state_dir = script.parent.parent.parent.parent if deployed else tx.STATE_DIRECTORY
     manager = tx.FileTransaction(state_dir=state_dir)
-    # The state directory and run are private before trusting their saved root.
-    with manager._lock():
-        manager._run(run_id)
-        config = manager._load(f"/runs/{run_id}/supervisor.json")
-        root = config.get("root")
-        if not isinstance(root, str) or (root != "/" and not SAFE_UNIT_PATH.fullmatch(root)):
-            raise tx.TransactionError("Invalid saved target root")
-        if root != "/":
-            tx.safe_path(root)
-    return tx.FileTransaction(root=Path(root), state_dir=state_dir)
+    # Read only protected checksummed metadata here. Recovery must resolve the
+    # owned run and stop its writer before attempting the common lock, which
+    # that writer may hold. This bootstrap read never changes target/state.
+    manager._directory(state_dir, create=False)
+    deadline = time.monotonic() + 0.5
+    while True:
+        try:
+            manager._run(run_id)
+            config = manager._load(f"/runs/{run_id}/supervisor.json")
+            break
+        except tx.StalePlan as error:
+            if (not str(error).endswith((": changed while opening", ": changed while reading", ": changed while inspecting"))
+                    or time.monotonic() >= deadline):
+                raise
+            time.sleep(0.01)
+    root = config.get("root")
+    if not isinstance(root, str) or (root != "/" and not SAFE_UNIT_PATH.fullmatch(root)):
+        raise tx.TransactionError("Invalid saved target root")
+    if root != "/":
+        tx.safe_path(root)
+    return tx.FileTransaction(root=Path(root), state_dir=state_dir, lock_timeout=lock_timeout)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -680,7 +699,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if os.geteuid() != 0:
             raise tx.TransactionError("Supervised system recovery requires root")
-        manager = cli_manager(options.run_id)
+        wait = 5 if options.operation in {"_apply", "_motd", "_boot", "recover"} else 0
+        manager = cli_manager(options.run_id, lock_timeout=wait)
         supervisor = RecoverySupervisor(manager)
         if options.operation in {"_apply", "_boot", "_motd"}:
             if Path(__file__).absolute() != manager.state_dir / "runs" / options.run_id / "worker/recovery.py":
