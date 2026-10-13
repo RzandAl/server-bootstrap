@@ -143,7 +143,8 @@ class BaseFixture:
         if report["blockers"]:
             raise AssertionError("Base fixture preflight: " + json.dumps(report["blockers"]))
         return base.prepare_review(self.profile, report, network=self.kernel.ip,
-                                   hostname=base.HostnameBackend(self.root), packages=pkg.AptBackend(self.root))
+                                   hostname=base.HostnameBackend(self.root), packages=pkg.AptBackend(self.root),
+                                   **getattr(self, "motd_review", {}))
 
     def launch(self):
         self.report = self.review()
