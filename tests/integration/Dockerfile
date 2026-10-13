@@ -25,5 +25,9 @@ RUN apt-get update && apt-get install --yes --no-install-recommends \
 
 COPY --from=base-target / /opt/rzandal-base-template/
 
+COPY bootstrap.py transaction.py network_recovery.py motd.py /opt/rzandal-motd-code/
+RUN python3 -I -c "import sys; from pathlib import Path; sys.path.insert(0, '/opt/rzandal-motd-code'); import bootstrap, motd; motd.stage_release(Path('/opt/rzandal-motd-release'))" \
+    && rm -r /opt/rzandal-motd-code
+
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

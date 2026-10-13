@@ -31,6 +31,7 @@ MAX_STATE_BYTES = 32 * MAX_FILE_BYTES
 MAX_CHANGED_FILES = 128
 RUN_ID = re.compile(r"[0-9a-f]{32}\Z")
 FINAL_PHASES = {"committed", "rolled_back"}
+MODULE_FINAL_PHASES = {"completed", "failed", "interrupted", "cancelled"}
 PHASES = FINAL_PHASES | {"prepared", "applying", "applied", "rolling_back", "recovery_failed"}
 FINGERPRINT_KEYS = ("kind", "sha256", "target", "mode", "uid", "gid", "inode", "device", "mtime_ns")
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -236,7 +237,10 @@ class FileTransaction:
     is implemented here; the future supervisor must supply those guarantees.
     """
 
-    def __init__(self, *, root: Path = Path("/"), state_dir: Path = STATE_DIRECTORY):
+    def __init__(self, *, root: Path = Path("/"), state_dir: Path = STATE_DIRECTORY, lock_timeout: float = 0):
+        if type(lock_timeout) not in (int, float) or not 0 <= lock_timeout <= 5:
+            raise TransactionError("Internal lock wait must be between zero and five seconds")
+        self.lock_timeout = lock_timeout
         self.fs = RootFS(root)
         self.state_dir = Path(state_dir).absolute()
         self.store = RootFS(self.state_dir, max_bytes=MAX_STATE_BYTES)
@@ -276,10 +280,16 @@ class FileTransaction:
                 if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != self.owner
                         or stat.S_IMODE(info.st_mode) != 0o600):
                     raise TransactionError("Unsafe transaction lock")
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError as error:
-                    raise BusyRun("Another transaction or recovery process holds the lock") from error
+                deadline = time.monotonic() + self.lock_timeout
+                while True:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError as error:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise BusyRun("Another transaction or recovery process holds the lock") from error
+                        time.sleep(min(0.02, remaining))
                 if create:
                     os.fsync(lock)
                     os.fsync(descriptor)
@@ -376,12 +386,41 @@ class FileTransaction:
             self.store.replace("/active.json", {"kind": "absent"}, expected=fingerprint(current))
 
     def _available(self) -> None:
+        module = self._module_active()
+        if module is not None:
+            value = self._load(f"/runs/{module}/motd.json")
+            if value.get("run_id") != module or value.get("phase") not in MODULE_FINAL_PHASES:
+                raise BusyRun(f"Run {module} has an unresolved MOTD module; inspect or recover it before another run")
+            self._clear_module(module)
         active = self._active()
         if active is not None:
             _, journal = self._run(active)
             if journal["phase"] not in FINAL_PHASES:
                 raise BusyRun(f"Run {active} needs recovery before another run can start")
             self._clear(active)
+
+    def _module_active(self) -> str | None:
+        if self.store.snapshot("/module-active.json")["kind"] == "absent":
+            return None
+        value = self._load("/module-active.json")
+        if not isinstance(value, dict) or set(value) != {"run_id"}:
+            raise TransactionError("Invalid active module pointer")
+        self._run_id(value["run_id"])
+        return value["run_id"]
+
+    def _reserve_module(self, run_id: str) -> None:
+        self._run_id(run_id)
+        if self._active() != run_id or self._module_active() is not None:
+            raise BusyRun("MOTD module needs its active Base reservation")
+        self._save("/module-active.json", {"run_id": run_id})
+
+    def _clear_module(self, run_id: str) -> None:
+        current = self._module_active()
+        if current is not None and current != run_id:
+            raise TransactionError("Another module's reservation must be preserved")
+        if current == run_id:
+            before = self.store.snapshot("/module-active.json")
+            self.store.replace("/module-active.json", {"kind": "absent"}, expected=fingerprint(before))
 
     def _verify_watched(self, report: dict[str, Any]) -> None:
         for path, expected in report["watched_files"].items():
@@ -474,7 +513,8 @@ class FileTransaction:
             self._save("/active.json", {"run_id": run_id})
             return run_id
 
-    def apply_files(self, run_id: str, *, refresh: Callable[[], dict[str, Any]]) -> None:
+    def apply_files(self, run_id: str, *, refresh: Callable[[], dict[str, Any]],
+                    before_apply: Callable[[], None] | None = None) -> None:
         """Internal primitive, not a public apply command or a network supervisor."""
         with self._lock():
             backup, journal = self._run(run_id)
@@ -483,6 +523,8 @@ class FileTransaction:
             if plan_digest(refresh()) != backup["plan_sha256"]:
                 raise StalePlan("Prepared plan changed; recover this run and review a new plan")
             self._verify_watched(backup)
+            if before_apply is not None:
+                before_apply()
             journal["phase"] = "applying"
             self._save(f"/runs/{run_id}/journal.json", journal)
             try:

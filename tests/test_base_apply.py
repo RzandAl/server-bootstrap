@@ -123,7 +123,7 @@ class BaseTests(unittest.TestCase):
                       if after["kind"] == "regular" else {**after, "mode": 0o777})
             entry["changed"] = not tx.same_file(entry["before"], target)
         return base.prepare_review(self.profile, report, network=self.ip, hostname=self.hostname,
-                                   packages=self.packages, inspector=self.inspector)
+                                   packages=self.packages, inspector=self.inspector, **getattr(self, "motd_review", {}))
 
     def launch(self):
         report = self.report()
@@ -300,6 +300,33 @@ class BaseTests(unittest.TestCase):
         with self.assertRaises(tx.RecoveryError):
             self.supervisor.apply_fixture(self.run_id)
         self.assertIsNone(self.supervisor.load(self.run_id)["acknowledgment"]["ready_ticks"])
+        self.supervisor.recover(self.run_id)
+        self.restored()
+
+    def test_guard_is_rechecked_under_file_lock_before_any_permanent_write(self):
+        self.launch()
+        verify = self.manager._verify_watched
+        def expires(backup):
+            verify(backup)
+            self.systemd.active_units.clear()
+        with mock.patch.object(self.manager, "_verify_watched", expires):
+            with self.assertRaises(tx.RecoveryError):
+                self.supervisor.apply_fixture(self.run_id)
+        self.assertEqual(self.manager._run(self.run_id)[1]["attempted"], [])
+        self.assertEqual(self.ip.calls + self.hostname.calls + self.packages.calls, [])
+        self.supervisor.recover(self.run_id)
+        self.restored()
+
+    def test_guard_is_rechecked_before_network_changes_after_files(self):
+        self.launch()
+        apply = self.manager.apply_files
+        def expires(*arguments, **options):
+            apply(*arguments, **options)
+            self.systemd.active_units.clear()
+        with mock.patch.object(self.manager, "apply_files", expires):
+            with self.assertRaises(tx.RecoveryError):
+                self.supervisor.apply_fixture(self.run_id)
+        self.assertEqual(self.ip.calls + self.hostname.calls + self.packages.calls, [])
         self.supervisor.recover(self.run_id)
         self.restored()
 

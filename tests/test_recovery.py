@@ -263,6 +263,25 @@ class RecoveryTests(unittest.TestCase):
         self.fixture.assert_originals()
         self.supervisor.recover(self.run_id)  # Trusted checkout can recover despite a damaged bundle.
 
+    @unittest.skipUnless(os.geteuid() == 0, "CLI bootstrap resolves protected system metadata as root")
+    def test_cli_resolves_private_run_without_taking_a_writers_lock(self):
+        self.arm()
+        worker = self.manager.state_dir / "runs" / self.run_id / "worker/recovery.py"
+        with self.manager._lock(), mock.patch.object(guard, "__file__", str(worker)):
+            resolved = guard.cli_manager(self.run_id, lock_timeout=5)
+        self.assertEqual(resolved.fs.root, self.manager.fs.root)
+        self.assertEqual(resolved.state_dir, self.manager.state_dir)
+        self.assertEqual(resolved.lock_timeout, 5)
+
+    @unittest.skipUnless(os.geteuid() == 0, "CLI metadata ownership requires root")
+    def test_cli_does_not_trust_a_corrupt_run_even_while_writer_lock_is_held(self):
+        self.arm()
+        worker = self.manager.state_dir / "runs" / self.run_id / "worker/recovery.py"
+        (worker.parent.parent / "supervisor.json").write_text("{}")
+        with self.manager._lock(), mock.patch.object(guard, "__file__", str(worker)):
+            with self.assertRaises(tx.TransactionError):
+                guard.cli_manager(self.run_id, lock_timeout=5)
+
     def test_expired_acknowledgment_cannot_disarm_timer(self):
         self.arm()
         self.apply()

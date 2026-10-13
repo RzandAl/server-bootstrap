@@ -62,6 +62,8 @@ and owned network journal. `0.5.0-dev` adds [fresh SSH acknowledgment](SSH_ACKNO
 `0.6.0-dev` adds the [temporary IPv6 probe](IPV6_PROBE.md).
 `0.7.0-dev` adds [guarded Base fixtures](BASE_APPLICATION.md), runtime hostname,
 native APT, retained-package diagnostics and deferred old-address removal.
+`0.8.0-dev` adds [native MOTD fixtures](MOTD_MODULE.md) after Base commit,
+independently pinned source staging and interruption reporting.
 [Independent recovery](RECOVERY.md) describes the Debian/systemd namespace
 scenarios, manager-restart test, fixture-only writer/commit gate, and remaining
 provider/VPS validation. Production Bootstrap apply stays unavailable until
@@ -99,10 +101,12 @@ external target, apt failure, partial run, no selected IPv6, and reboot.
 
 ## 4. Native MOTD automation
 
-Implement a documented, tested noninteractive lifecycle in
-`RzandAl/debian-server-info-motd` first and release it. Update the one source pin,
-stage and verify its installer, then call that native interface. Keep
-`PrintLastLog` outside the default bootstrap plan.
+The documented native lifecycle is released as MOTD `v0.4.0`. Bootstrap stages
+installer and payload from one exact commit, verifies independent pins and
+reviews native JSON health before confirmation. The fixture writer runs after
+fresh SSH Base commit. Failed/interrupted module state preserves working Base;
+`PrintLastLog` stays outside the default plan. Production wiring remains gated
+pending VPS acceptance.
 
 **Acceptance:** fresh install, matching healthy no-op, repair, upgrade, and
 native rollback. Verify state, pinned source, checksums, and `server-info` exit

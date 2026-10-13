@@ -9,11 +9,11 @@ backups and recovery.
 
 > **Target platform:** Debian 13 (trixie), with ifupdown networking.
 >
-> **Development status:** `0.7.0-dev` connects the reviewed Base file plan,
-> network transition, runtime hostname, and APT to independent recovery in
-> isolated test roots. Packages are retained after recovery. Fresh SSH
-> acknowledgment and temporary IPv6 probing guard the fixture lifecycle.
-> Production Base apply and module integration remain pending.
+> **Development status:** `0.8.0-dev` connects reviewed Base fixtures to native
+> MOTD automation after fresh SSH commit. Installer and payload are independently
+> pinned to the same released commit. Module failure preserves Base; interruption
+> is reported without automatic retries. Packages are retained after recovery.
+> Production Bootstrap apply remains pending VPS acceptance.
 > No production release is available.
 
 ## Highlights
@@ -50,6 +50,10 @@ backups and recovery.
   addresses until fresh SSH acknowledgment and checks complete Base health.
 - Journals strict APT update and missing-package installation; restores settings
   independently and reports retained package state requiring manual attention.
+- Reviews native MOTD JSON health before confirmation, then installs, updates,
+  repairs or checks the pinned release only after Base fresh SSH commit.
+- Serializes an unresolved MOTD module against new Base runs; independently
+  observes worker interruption and preserves committed Base and SSH settings.
 
 ## Standard profile
 
@@ -65,7 +69,7 @@ backups and recovery.
 | DNS management | Static `/etc/resolv.conf`, after an ownership audit |
 | Debian suites | `trixie`, `trixie-security`, `trixie-updates` |
 | Debian components | `main non-free-firmware`; no `deb-src` or backports |
-| MOTD | Selected by default; pinned to `v0.3.1` |
+| MOTD | Selected by default; pinned to `v0.4.0` and its exact commit/checksums |
 | Firewall and VPN | Future modules, unavailable in this build |
 
 The planned base package set is `curl`, `git`, `rsync`, `jq`, `unzip`, `htop`,
@@ -74,8 +78,9 @@ The planned base package set is `curl`, `git`, `rsync`, `jq`, `unzip`, `htop`,
 The runtime and apply prerequisites are separate from that convenience package
 set. Planning needs Python 3.11 or newer and installed timezone data. Interface
 autodetection uses `iproute2` when available. The future apply engine will also
-require ifupdown and working CA certificates; the existing MOTD installer needs
-`wget` and its documented core utilities.
+require ifupdown and working CA certificates. The MOTD module uses its verified
+local source API and documented core utilities, including `flock` and `timeout`;
+it does not require `wget` for local installation.
 
 ## Compatibility
 
@@ -85,7 +90,7 @@ require ifupdown and working CA certificates; the existing MOTD installer needs
 | Planner runtime | Linux, Python 3.11 or newer, installed IANA timezone data |
 | Network profiles | Static IPv4, including `/32`; optional static IPv6 |
 | Local validation | Automated parser, host-audit, preservation, and repeat-planning tests |
-| CI | Debian 13 root/user regressions, native Base/APT/hostname fixtures, kernel recovery, real OpenSSH reconnects, and routed IPv6 probes |
+| CI | Debian 13 root/user regressions, native Base/APT/hostname/MOTD fixtures, kernel recovery, real OpenSSH reconnects, and routed IPv6 probes |
 | Live VPS apply | Pending; internal file writes are not connected to the bootstrap CLI |
 
 The account is detected, not selected or created. `USER`, `LOGNAME`, and `HOME`
@@ -134,7 +139,7 @@ The profile format and a documentation-address example are in
 | Module | Scope | Status |
 | --- | --- | --- |
 | Base | Hostname, network, DNS, locale, timezones, APT sources, packages | Guarded application verified in isolated roots; production pending |
-| MOTD | [Debian Server Info MOTD](https://github.com/RzandAl/debian-server-info-motd) through its native installer | Pinned integration planned |
+| MOTD | [Debian Server Info MOTD](https://github.com/RzandAl/debian-server-info-motd) through its native installer | Pinned native fixture lifecycle; production pending |
 | Firewall | Separate, explicit rules and recovery | Future |
 | VPN | Separate VPN installation and configuration | Future |
 
@@ -147,6 +152,7 @@ The profile format and a documentation-address example are in
 - [Fresh SSH acknowledgment and terminal health checks](docs/SSH_ACKNOWLEDGMENT.md)
 - [Temporary IPv6 checks, success policy, and owned cleanup](docs/IPV6_PROBE.md)
 - [Reviewed Base application and retained-package policy](docs/BASE_APPLICATION.md)
+- [Pinned native MOTD lifecycle after Base commit](docs/MOTD_MODULE.md)
 - [Continuous integration checks](.github/workflows/ci.yml)
 
 ## Tests and validation

@@ -273,8 +273,8 @@ def validate_config(value: dict) -> dict:
         profile = bootstrap.Profile.from_dict(value["profile"], current_user=value["profile"].get("user"))
     except ValueError as error:
         raise tx.TransactionError(str(error)) from error
-    if profile.to_dict() != value["profile"] or profile.motd:
-        raise tx.TransactionError("Base requires a canonical profile without unfinished modules")
+    if profile.to_dict() != value["profile"]:
+        raise tx.TransactionError("Base requires a canonical profile")
     ssh.validate_account(value["account"])
     if value["account"]["name"] != profile.user:
         raise tx.TransactionError("Base profile differs from the invoking account")
@@ -314,9 +314,11 @@ def validate_config(value: dict) -> dict:
     return value
 
 
-def prepare_review(profile, report: dict, *, network, hostname, packages, inspector=None) -> dict:
-    if profile.motd:
-        raise tx.TransactionError("MOTD needs its native noninteractive installer before an integrated apply")
+def prepare_review(profile, report: dict, *, network, hostname, packages, inspector=None, motd_source=None, motd_backend=None) -> dict:
+    if profile.motd and (motd_source is None or motd_backend is None):
+        raise tx.TransactionError("MOTD requires a verified native source and read-only module review")
+    if not profile.motd and (motd_source is not None or motd_backend is not None):
+        raise tx.TransactionError("Unselected MOTD cannot enter a Base plan")
     if report.get("file_plan_available") is not True or report.get("blockers") != []:
         raise tx.TransactionError("An unblocked complete host plan is required")
     inspector = inspector or ssh.SSHInspector()
@@ -342,6 +344,9 @@ def prepare_review(profile, report: dict, *, network, hostname, packages, inspec
              "ssh_origin": origin, "ssh_preserve_route": ssh_route}
     reviewed = copy.deepcopy(report)
     reviewed["base_apply"] = validate_config(value)
+    if profile.motd:
+        import motd
+        reviewed["motd_plan"] = motd.prepare_plan(motd_source, motd_backend)
     return reviewed
 
 
@@ -357,6 +362,13 @@ def launch_reviewed(manager, supervisor, report: dict, *, refresh, confirm=input
     output(format_host_plan(report, show_diff=True))
     output("Runtime hostname: " + config["hostname_before"]["hostname"] + " -> " + profile.hostname)
     output("Old addresses remain until verified fresh SSH acknowledgment. Installed packages are retained on rollback.")
+    if report.get("motd_plan") is not None:
+        import motd
+        module = motd.validate_plan(report["motd_plan"])
+        output("MOTD after Base commit: " + module["action"] + " " + module["release"]["source_ref"]
+               + " (native installer, independently pinned checksums; Base preserved on module failure)")
+        if module["action"] == "repair":
+            output("Native MOTD repair will replace missing/modified managed executables with the pinned release.")
     answer = confirm("Apply? [y/N] ")
     if not isinstance(answer, str) or answer.strip().lower() not in {"y", "yes", "д", "да"}:
         return None

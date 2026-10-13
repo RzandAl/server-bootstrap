@@ -7,9 +7,11 @@ import json
 import os
 from pathlib import Path
 import signal
+import select
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -229,6 +231,43 @@ except tx.BusyRun:
             result = self.child(code, run_id)
         self.assertEqual(result.returncode, 17, result.stderr)
         self.assert_originals()
+
+    def test_bounded_worker_wait_acquires_after_a_short_reader_releases(self):
+        run_id = self.prepare()
+        code = "import fcntl, sys, time; f=open(sys.argv[1], 'rb'); fcntl.flock(f, fcntl.LOCK_EX); print('locked', flush=True); time.sleep(0.3)"
+        reader = subprocess.Popen([sys.executable, "-I", "-c", code, str(self.state / "lock")],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertTrue(select.select([reader.stdout], [], [], 5)[0])
+            self.assertEqual(reader.stdout.readline().strip(), "locked")
+            waiting = tx.FileTransaction(root=self.root, state_dir=self.state, lock_timeout=1)
+            started = time.monotonic()
+            self.assertEqual(waiting.status(run_id)["phase"], "prepared")
+            self.assertGreater(time.monotonic() - started, 0.1)
+            self.assert_originals()
+        finally:
+            reader.communicate(timeout=5)
+
+    def test_internal_wait_is_bounded_and_default_contenders_still_fail_fast(self):
+        run_id = self.prepare()
+        code = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd()))
+import transaction as tx
+started = time.monotonic()
+try:
+    tx.FileTransaction(root=Path(sys.argv[1]), state_dir=Path(sys.argv[2]), lock_timeout=0.05).status(sys.argv[3])
+except tx.BusyRun:
+    assert 0.04 <= time.monotonic() - started < 2
+    raise SystemExit(17)
+"""
+        with self.manager._lock():
+            result = self.child(code, run_id)
+        self.assertEqual(result.returncode, 17, result.stderr)
+        for value in (-1, 6, True, float("inf"), float("nan")):
+            with self.assertRaises(tx.TransactionError):
+                tx.FileTransaction(root=self.root, state_dir=self.state, lock_timeout=value)
 
     def test_write_failure_rolls_back_prior_writes(self):
         run_id = self.prepare()

@@ -3,8 +3,9 @@
 `0.7.0-dev` connects the complete Base plan to the independent supervisor in
 protected fixture roots. The public wizard still only collects and previews;
 there is no production `--apply` command. Runtime hostname and package mutations
-explicitly reject the system root. MOTD must be deselected for these fixtures
-until its native noninteractive lifecycle is ready.
+explicitly reject the system root. `0.8.0-dev` allows selected
+[native MOTD](MOTD_MODULE.md) with a verified source and read-only module review.
+Its writer runs after Base fresh SSH commit and has a separate result.
 
 ## Application order
 
@@ -97,7 +98,7 @@ changed namespace identity, decline/stale plans, and SSH loss after deferred
 network changes.
 
 These checks establish the fixture lifecycle. Full ifupdown/provider behavior,
-arbitrary hooks, module integration and a healthy VPS reboot remain required
+arbitrary hooks, production module wiring and a healthy VPS reboot remain required
 before an apply-capable release.
 
 Primary references: [apt-get(8)](https://manpages.debian.org/trixie/apt/apt-get.8.en.html)
