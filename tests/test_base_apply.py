@@ -221,6 +221,11 @@ class BaseTests(unittest.TestCase):
         self.restored()
         self.assertTrue(self.package_journal().load()["manual_attention"])
         self.assertIsNone(self.manager._active())
+        status = self.supervisor.status(self.run_id)
+        self.assertEqual(status["phase"], "rolled_back")
+        self.assertEqual(status["packages"]["policy"], "retained")
+        self.assertTrue(status["packages"]["manual_attention"])
+        self.assertNotIn("before", status["packages"])
 
     def test_external_hostname_edit_is_preserved_while_files_and_network_restore(self):
         self.apply()
