@@ -1,11 +1,12 @@
 # Planning and architecture
 
 This is the working design for the apply-capable first release. The current
-`0.7.0-dev` build implements collection, validation, read-only host preflight,
+`0.8.0-dev` build implements collection, validation, read-only host preflight,
 exact file candidates, durable file transactions, and independent systemd/network
 recovery with fresh SSH acknowledgment and temporary IPv6 probing on isolated
 roots and namespaces, plus [reviewed Base application](BASE_APPLICATION.md)
-with runtime hostname and retained package diagnostics. The bootstrap CLI does not
+with runtime hostname and retained package diagnostics, then
+[native MOTD](MOTD_MODULE.md) after Base fresh SSH commit. The bootstrap CLI does not
 execute the production apply workflow yet.
 
 ## Scope
@@ -38,9 +39,10 @@ permission changes are part of Base.
    not changed, create recovery data, and arm independent network rollback.
 7. Run the selected temporary IPv6 probe. Clean up probe-owned state on success,
    failure, cancellation, and interruption. A failed probe stops application.
-8. Apply managed changes, verify every module, and record success only after
-   connectivity verification from a fresh session. Disarm rollback after that
-   recovery acknowledgment.
+8. Apply and verify Base, require connectivity verification from a fresh SSH
+   session, commit Base and disarm its rollback timer.
+9. Run selected MOTD through the native installer and record its separate
+   result. Module failure preserves the verified Base stage.
 
 Temporary IPv6 probing is a mutation. It belongs after the single final
 confirmation, even though it precedes permanent IPv6 configuration.
@@ -248,21 +250,17 @@ it while asking questions.
 ## MOTD integration
 
 `MOTD_SOURCE_REF` in `bootstrap.py` pins the current verified upstream release
-`v0.3.1` in one place. Use the same immutable release selection for the
-installer and its payload. Download into staging, verify the expected content
-and checksum, validate Bash syntax, and only then execute the native installer.
-Do not stream a moving `main` script directly into a root shell.
+`v0.4.0` in one place; `MOTD_RELEASE` records the exact verified commit and
+independent hashes for installer, VERSION, manifest and executables. Download
+every file from that commit into protected staging and verify pins, version,
+manifest and Bash syntax before executing any downloaded code. The installer
+receives the explicit release ref and verified local source directory.
 
-The existing release uses `/dev/tty`, its own menu, and its own confirmations.
-It accepts `--source-ref` and `--debug`, but has no documented automatic-install
-mode. Therefore, "native installer plus one bootstrap confirmation" requires
-a supported noninteractive install/update/repair interface in the MOTD project
-and a tested release containing it. We will not imitate keypresses, scrape
-menus, invent a `--yes` flag, or duplicate its installation internals here.
-
-Until that dependency is ready, MOTD apply remains unavailable. The selected
-module is shown as a plan only. The current source pin is an integration
-baseline, not a claim that unattended installation already works.
+The released native API supports unattended install/update/repair and read-only
+JSON health. Review selects its action before the single confirmation. Healthy
+matching state is checked without a writer; missing/modified executables select
+explicit repair, visible in the plan. Invalid or unmanaged state blocks review.
+No menu scraping or duplicated native installation/recovery internals are used.
 
 An integrated run must verify native installation state, expected source ref,
 managed checksums, presence of `/usr/local/bin/server-info`, and a successful
@@ -270,6 +268,12 @@ bounded `server-info` invocation. A matching healthy installation is a no-op;
 missing or modified managed files follow the native repair lifecycle.
 OpenSSH `PrintLastLog` management must stay unselected unless it appears
 explicitly in the collected plan.
+
+Fresh SSH commits Base before the detached MOTD worker starts. A module
+reservation prevents a new Base run from racing its native writer. Ordinary
+failure uses native recovery; interruption is observed without retry, uninstall
+or Base undo. See [MOTD module](MOTD_MODULE.md) for phases and verification.
+The system-root writer remains gated pending VPS acceptance.
 
 ## Current host-plan coverage
 
@@ -354,7 +358,7 @@ authorize or enable production Base through a command-line flag.
 - [Debian trixie ifupdown interfaces(5)](https://manpages.debian.org/trixie/ifupdown/interfaces.5.en.html)
 - [Debian trixie APT sources.list(5)](https://manpages.debian.org/trixie/apt/sources.list.5.en.html)
 - [cloud-init network configuration](https://docs.cloud-init.io/en/latest/reference/network-config.html)
-- [MOTD v0.3.1 installer contract](https://github.com/RzandAl/debian-server-info-motd/blob/v0.3.1/docs/INSTALLER.md)
+- [MOTD v0.4.0 installer contract](https://github.com/RzandAl/debian-server-info-motd/blob/v0.4.0/docs/INSTALLER.md)
 
 ## Commit identity
 

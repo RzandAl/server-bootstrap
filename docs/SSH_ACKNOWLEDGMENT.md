@@ -4,8 +4,9 @@
 fixture run can commit. The original invoking account is fixed during arming.
 `0.6.0-dev` also requires a selected [IPv6 probe](IPV6_PROBE.md) to have passed
 and cleaned its temporary objects. `0.7.0-dev` adds complete Base health and
-defers old-address removal until acknowledgment. Production Base application remains disabled
-until module health and host transitions are connected; this document does not
+defers old-address removal until acknowledgment. `0.8.0-dev` queues selected
+native MOTD after Base commit, with its own outcome. Production application remains disabled
+pending VPS acceptance; this document does not
 provide a VPS installer command.
 
 ## Connection evidence
@@ -96,7 +97,9 @@ There is no token to paste, account selector, arbitrary command callback, or
 force flag. The run ID selects private recovery state and is not an SSH proof.
 For root login, omit sudo. Use a genuinely new TCP connection, disabling client
 multiplexing when needed. Acknowledgment completes the already authorized
-transaction; it adds no second Apply prompt or module changes.
+Base transaction; it adds no second Apply prompt. Selected MOTD was already
+reviewed and authorized by the original plan and is queued only after this
+fresh SSH commit. Repeating acknowledgment never retries a module writer.
 
 ## Verification
 

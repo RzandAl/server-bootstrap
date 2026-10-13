@@ -4,9 +4,10 @@
 `0.5.0-dev` added verified fresh SSH acknowledgment for isolated fixtures;
 `0.6.0-dev` adds guarded temporary IPv6 checks and independent cleanup;
 `0.7.0-dev` connects reviewed Base fixtures, runtime hostname and retained
-package diagnostics to that guard.
-The bootstrap wizard remains read-only. Production Base application and
-module wiring are still disabled; there is no bootstrap
+package diagnostics to that guard. `0.8.0-dev` adds native MOTD after Base commit,
+module reservation and independent interruption observation.
+The bootstrap wizard remains read-only. Production application
+is still disabled; there is no bootstrap
 `--apply` option or recovery CLI flag that enables them.
 
 ## Independent supervisor
@@ -24,6 +25,9 @@ watched files/inventories, and the initial live network before it permits writes
 | `ipv6-probe.json` | Optional candidate contract, unused routing identifiers, per-object ownership/intent, and source-bound TCP evidence |
 | `hostname.json` | Original runtime hostname and namespace identity, durable write intent, and conflict-aware restoration |
 | `packages.json` | Original/final dpkg inventory, APT step intent/results, retained state and manual-attention flag; no package rollback |
+| `motd.json` / `motd-source/` | Reviewed native action, release pins, private source copy and durable module intent/results |
+| `module-active.json` | Prevents a new Base run from racing an unresolved native module |
+| `*-motd.service` | Native installer after committed Base; failure/interruption preserves Base |
 | `*-apply.service` | Detached writer; production system root is explicitly rejected |
 | `*-rollback.service` | Stops the owned writer, cleans its probe, restores files/network, and retries failed recovery |
 | `*-rollback.timer` | Monotonic timeout plus UTC calendar deadline and persistent missed-event handling |
@@ -38,6 +42,12 @@ The timer must be active before the writer starts. Failure invokes independent
 rollback; an expired deadline stops the writer's entire service cgroup before
 acquiring the shared transaction lock. Only this run's writer is stopped.
 Recovery does not kill the user's SSH process or arbitrary PIDs.
+
+CLI bootstrap resolves only private checksummed metadata without taking the
+writer's lock. Recovery can therefore stop the owned writer before waiting.
+Internal workers and recovery wait at most five seconds for short readers;
+ordinary transaction contenders remain nonblocking. Run/guard health is
+rechecked under the acquired lock before permanent files or network changes.
 
 Files, probe cleanup, network and runtime hostname are attempted even if one
 participant reports a conflict. Package diagnosis is read-only after writer
@@ -106,7 +116,14 @@ and gateway, pass, and clean its owned temporary objects before application;
 its completed evidence is rechecked at acknowledgment. Reviewed Base fixtures
 also require complete file, hostname and package health; old addresses are
 removed only inside fresh acknowledgment. Production Base still needs
-module health connected to this lifecycle. There is no unattended production commit.
+VPS acceptance before production application. There is no unattended production commit.
+
+A selected MOTD retains owned boot/failure observer units after Base commit,
+while its Base deadline timer is disarmed. The native writer holds the shared
+project lock and its own installer lock. Independent recovery stops its cgroup,
+records interruption and attempts native read-only health; it never repeats
+installation or undoes committed Base. Terminal module state clears its
+reservation and removes remaining owned units. See [MOTD module](MOTD_MODULE.md).
 
 ## Console recovery
 
@@ -117,7 +134,7 @@ sudo python3 -I recovery.py status <run-id>
 sudo python3 -I recovery.py recover <run-id>
 ```
 
-The installed private worker exposes `_apply` and `_boot` only for its generated
+The installed private worker exposes `_apply`, `_motd` and `_boot` only for its generated
 units; these operations reject execution from a normal checkout. There is no
 CLI arm/start, arbitrary backup path, or namespace/root override. The `acknowledge`
 operation accepts only an existing configured fixture run; the production system
