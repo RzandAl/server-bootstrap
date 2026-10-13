@@ -361,6 +361,17 @@ class ProbeParserTests(unittest.TestCase):
         self.assertEqual(calls[0][calls[0].index("preferred_lft") + 1], "0")
         self.assertNotIn("nodad", calls[0])
 
+    def test_ipv6_host_route_without_scope_matches_its_owned_kernel_object(self):
+        backend = probe.ProbeBackend("ens3")
+        allocation = {"table": probe.TABLE_BASE, "priority": probe.PRIORITY_BASE, "mark": probe.MARK_BASE}
+        expected = probe.objects(CONFIG, allocation, reused=False)[1]
+        raw = {"dst": CONFIG["gateway"], "dev": "ens3", "table": allocation["table"],
+               "protocol": "static", "metric": 1024, "flags": [], "pref": "medium"}
+        with mock.patch.object(backend, "all_routes", return_value=[raw]):
+            self.assertEqual(backend.current(expected, CONFIG, allocation), expected)
+        with mock.patch.object(backend, "all_routes", return_value=[{**raw, "nhid": 99}]):
+            self.assertEqual(backend.current(expected, CONFIG, allocation)["kind"], "external")
+
     def test_allocator_skips_used_tables_priorities_and_mark_masks(self):
         backend = probe.ProbeBackend("ens3")
         routes = [{"table": probe.TABLE_BASE}]
