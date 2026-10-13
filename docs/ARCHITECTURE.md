@@ -1,9 +1,10 @@
 # Planning and architecture
 
 This is the working design for the apply-capable first release. The current
-`0.5.0-dev` build implements collection, validation, read-only host preflight,
+`0.6.0-dev` build implements collection, validation, read-only host preflight,
 exact file candidates, durable file transactions, and independent systemd/network
-recovery with fresh SSH acknowledgment tested on isolated roots and namespaces. The bootstrap CLI does not
+recovery with fresh SSH acknowledgment and temporary IPv6 probing on isolated
+roots and namespaces. The bootstrap CLI does not
 execute the production apply workflow yet.
 
 ## Scope
@@ -95,7 +96,7 @@ Validation has three distinct layers:
 | --- | --- | --- |
 | Value validation | Short hostname, Linux interface name, account name, complete IP parser, numeric prefixes, address families, known timezone | Implemented |
 | Host eligibility | Debian 13, invoking account/home, prerequisites, locale, live interface/routes, network/DNS/APT ownership | Implemented for the supported static ifupdown subset; unsupported migrations blocked |
-| Connectivity | DAD, gateway routing, external reachability, new SSH session | DAD and fresh SSH acknowledgment tested in fixtures; gateway/external probes and production wiring pending |
+| Connectivity | DAD, gateway routing/NDP, candidate-bound external TCP, new SSH session | Implemented in supervised fixtures; production wiring and VPS validation pending |
 
 `ipaddress` rejects the previous `22a12:...` typo because an IPv6 hextet may not
 contain five hexadecimal digits. CIDR values must use numeric prefixes, not
@@ -134,8 +135,9 @@ For IPv4 `/32` with an off-link gateway, the final backend must install an
 explicit reachable route to that gateway or a verified equivalent provider
 configuration before the default route. The planner identifies this case;
 the staged `/32` candidate uses ifupdown `pointopoint` before `gateway`.
-Debian CI validates its syntax with `ifquery`; actual kernel behavior remains
-pending namespace and VPS validation. Other off-link IPv4 prefixes and global
+Debian CI validates its syntax with `ifquery` and exercises owned `/32` kernel
+transitions in namespaces; full provider/ifupdown transition validation remains
+pending on a VPS. Other off-link IPv4 prefixes and global
 off-link IPv6 gateways block staging.
 
 Do not run a blind `systemctl restart networking` over SSH. Plan the exact
@@ -152,7 +154,7 @@ and both deadlines are checked before durable terminal state and timer cleanup.
 
 ## IPv6 probe contract
 
-The probe must snapshot existing addresses, routes, neighbor information needed
+The internal probe snapshots existing addresses, routes, neighbor information needed
 for diagnosis, and relevant interface state before it makes changes.
 
 - Add only the candidate address if it is absent. Reuse an existing identical
@@ -163,16 +165,22 @@ for diagnosis, and relevant interface state before it makes changes.
   path or an older working IPv6 address can produce a false positive.
 - Verify routing to the gateway and the external target separately. A gateway
   may block ICMP Echo; do not equate an unanswered ping with an invalid gateway.
-- Prefer a temporary routing table and source-specific policy rule for an
-  external probe. Do not replace the existing default route merely to test a
-  candidate address.
+- Use an unused temporary routing table and a rule requiring both the candidate
+  source and an owned packet mark. Bind TCP to the address, interface and mark;
+  ordinary unmarked traffic keeps its original routing policy.
 - Delete only addresses, routes, and rules created by this run. Preserve any
   preexisting state, including an identical address or gateway route.
 - On inconclusive external checks, stop without writing permanent IPv6.
   There is no silent fallback to "validated" or to disabling selected IPv6.
 
-The exact probe destinations and success policy must be finalized before
-implementing apply. This build does not send probe traffic.
+Success requires completed DAD, the intended marked route, resolved gateway
+NDP, and at least one successful TCP connection to the two planned destinations:
+Cloudflare `[2606:4700:4700::1111]:443` and Quad9 `[2620:fe::10]:53` (IPv6 address
+and port are separate typed fields). New addresses use `noprefixroute` and
+`preferred_lft 0`; existing identical addresses are reused unchanged. Cleanup
+must finish before any permanent files or live transition. The bootstrap CLI
+only discloses this plan; traffic is currently sent only by supervised fixtures.
+[IPv6 probe](IPV6_PROBE.md) details endpoints, ownership and failure behavior.
 
 ## DNS, locale, and timezones
 

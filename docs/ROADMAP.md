@@ -53,14 +53,16 @@ confirmation. A cancelled run leaves target bytes and live networking intact.
 - [ ] Connect production Base to the supervisor after host/probe contracts are ready.
 - [x] New-session acknowledgment, file/network health checks, and timer disarming
   for isolated fixtures; real OpenSSH IPv4/IPv6 and sudo/ControlMaster scenarios.
-- [ ] Bind production module health and the completed IPv6 probe to acknowledgment.
+- [x] Bind the completed and cleaned IPv6 probe to fixture application and acknowledgment.
+- [ ] Bind production module health to acknowledgment.
 
 The file layer arrived in `0.3.0-dev`; `0.4.0-dev` adds the independent supervisor
-and owned network journal. `0.5.0-dev` adds [fresh SSH acknowledgment](SSH_ACKNOWLEDGMENT.md).
+and owned network journal. `0.5.0-dev` adds [fresh SSH acknowledgment](SSH_ACKNOWLEDGMENT.md);
+`0.6.0-dev` adds the [temporary IPv6 probe](IPV6_PROBE.md).
 [Independent recovery](RECOVERY.md) describes the Debian/systemd namespace
 scenarios, manager-restart test, fixture-only writer/commit gate, and remaining
 provider/VPS validation. Production Bootstrap apply stays unavailable until
-probe, module health, and host transition guarantees are connected.
+module health and host transition guarantees are connected.
 
 **Acceptance:** a timeout, lost SSH session, failed step, signal, or stale run
 restores both original files and live network state. Reused addresses/routes
@@ -72,10 +74,13 @@ Implement hostname plus hosts, selected ifupdown stanzas, static DNS, system
 locale and timezone, managed user timezone, normalized APT sources, package
 index refresh, and missing-package installation.
 
-Add the temporary IPv6 probe after confirmation: DAD, explicit candidate source,
-gateway routing, external reachability, timeouts, and cleanup. Run IPv4 `/32`,
-in-prefix gateway, link-local IPv6 gateway, and global IPv6 gateway scenarios
-in isolated namespaces before a disposable VPS.
+The internal temporary IPv6 probe now runs under the armed supervisor before
+permanent file writes: DAD, explicit source/mark binding, gateway routing and
+NDP, external TCP, bounded timeouts, and durable cleanup. Isolated routed
+namespaces cover link-local/global gateways, fresh/reused addresses, blocked
+Echo, duplicate addresses, old-source false positives, and writer death.
+Connect this to the single production Apply confirmation and validate it on a
+disposable VPS after Base/package wiring.
 
 **Acceptance:** two identical runs produce no duplicate content and no needless
 file rewrites. Test invalid IPv6, DAD failure, blocked gateway Echo, unreachable

@@ -2,8 +2,10 @@
 
 `0.5.0-dev` verifies an authenticated new OpenSSH connection before a supervised
 fixture run can commit. The original invoking account is fixed during arming.
-Production Base application remains disabled until its IPv6 probe and module
-health are connected; this document does not provide a VPS installer command.
+`0.6.0-dev` also requires a selected [IPv6 probe](IPV6_PROBE.md) to have passed
+and cleaned its temporary objects. Production Base application remains disabled
+until module health and host transitions are connected; this document does not
+provide a VPS installer command.
 
 ## Connection evidence
 
@@ -50,8 +52,8 @@ The fixture API verifies that these targets exist in its projected final
 address inventory. Profiles cannot supply evidence or executable commands.
 
 Before production wiring, the reviewed Base profile must supply the candidate
-targets and original account. Provider reachability and IPv6 gateway/external
-probes remain separate acceptance requirements. SSH proof for one selected
+targets and original account. Provider reachability remains a VPS acceptance
+requirement even with the internal IPv6 probe. SSH proof for one selected
 family does not validate the other family's Internet path.
 
 ## Commit and failure behavior
@@ -60,7 +62,8 @@ Under the shared transaction lock, acknowledgment requires the active applied
 run, an intact private worker bundle, matching manager generation, an active
 independent timer, and unexpired monotonic and wall-clock deadlines.
 
-Verify candidate file bytes/type/owner/mode and intended static network state.
+Verify candidate file bytes/type/owner/mode, intended static network state, and
+the completed/cleaned IPv6 probe when one was armed.
 Preserved addresses and reused routes, including an unchanged gateway route,
 must remain as reviewed. Kernel connected routes follow address lifecycles;
 unrelated additional objects remain allowed.
@@ -76,7 +79,7 @@ any attempted evidence for diagnosis in private root-owned state.
 A crash before terminal commit permits rollback. A crash or cleanup failure
 after durable commit preserves the candidate state; late recovery finishes
 cleanup without undoing it. Repeating acknowledgment for an already committed
-run is idempotent. Existing `0.4.0-dev` private bundle manifests remain readable
+run is idempotent. Existing `0.4.0-dev` and `0.5.0-dev` private bundle manifests remain readable
 for recovery from a trusted checkout.
 
 ## Existing fixture acknowledgment

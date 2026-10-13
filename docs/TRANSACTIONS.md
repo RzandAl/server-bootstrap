@@ -84,8 +84,10 @@ file/network lifecycle. The independent supervisor, protected bundle, timer,
 and owned-network journal were added in `0.4.0-dev`; see
 [Independent recovery](RECOVERY.md). `0.5.0-dev` adds
 [fresh SSH acknowledgment](SSH_ACKNOWLEDGMENT.md) for isolated fixtures; final
-health is rechecked before terminal commit. Production Base/probe/module wiring
-remain pending. No VPS reboot guarantee is claimed in this build.
+health is rechecked before terminal commit. `0.6.0-dev` adds an
+[owned temporary IPv6 probe](IPV6_PROBE.md) before any permanent writes, with
+independent cleanup participating in coordinated recovery. Production Base and
+module wiring remain pending. No VPS reboot guarantee is claimed in this build.
 
 ## Verification
 
