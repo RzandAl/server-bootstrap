@@ -34,8 +34,10 @@ tx = sys.modules.get("transaction") or peer_module("transaction")
 net = sys.modules.get("network_recovery") or peer_module("network_recovery")
 bootstrap = sys.modules.get("bootstrap") or peer_module("bootstrap")
 ssh = sys.modules.get("ssh_session") or peer_module("ssh_session")
+probe = sys.modules.get("ipv6_probe") or peer_module("ipv6_probe")
 UNIT_DIRECTORY = Path("/etc/systemd/system")
-BUNDLE = ("bootstrap.py", "transaction.py", "network_recovery.py", "ssh_session.py", "recovery.py")
+SSH_BUNDLE = ("bootstrap.py", "transaction.py", "network_recovery.py", "ssh_session.py", "recovery.py")
+BUNDLE = (*SSH_BUNDLE, "ipv6_probe.py")
 LEGACY_BUNDLE = ("transaction.py", "network_recovery.py", "recovery.py")
 SAFE_UNIT_PATH = re.compile(r"/[A-Za-z0-9_./-]+\Z")
 
@@ -105,13 +107,16 @@ class RecoverySupervisor:
 
     def __init__(self, manager: tx.FileTransaction, *, systemd: Systemd | None = None,
                  unit_dir: Path = UNIT_DIRECTORY, backend_factory: Callable = net.IPBackend,
-                 session_inspector: ssh.SSHInspector | None = None):
+                 session_inspector: ssh.SSHInspector | None = None,
+                 probe_backend_factory: Callable = probe.ProbeBackend,
+                 probe_connector: probe.TCPConnector | None = None):
         self.manager = manager
         self.systemd = systemd or Systemd()
         self.unit_dir = Path(unit_dir).absolute()
         self.units_fs = tx.RootFS(self.unit_dir)
         self.backend_factory = backend_factory
         self.session_inspector = session_inspector or ssh.SSHInspector()
+        self.probe_backend_factory, self.probe_connector = probe_backend_factory, probe_connector
 
     def path(self, run_id: str) -> str:
         self.manager._run_id(run_id)
@@ -127,7 +132,7 @@ class RecoverySupervisor:
                 or type(config.get("timeout")) is not int or not 5 <= config["timeout"] <= 1800
                 or type(config.get("deadline_ns")) is not int or type(config.get("monotonic_deadline_ns")) is not int
                 or config.get("units") != unit_names(run_id) or not isinstance(config.get("bundle_sha256"), dict)
-                or set(config["bundle_sha256"]) not in (set(BUNDLE), set(LEGACY_BUNDLE))):
+                or set(config["bundle_sha256"]) not in (set(BUNDLE), set(SSH_BUNDLE), set(LEGACY_BUNDLE))):
             raise tx.TransactionError("Invalid supervisor configuration")
         net.interface_name(config["interface"])
         expected_texts = unit_texts(run_id, self.manager.state_dir / "runs" / run_id / "worker/recovery.py",
@@ -138,6 +143,8 @@ class RecoverySupervisor:
             raise tx.TransactionError("Fixture namespaces are not allowed for the system root")
         if config.get("acknowledgment") is not None:
             self.validate_acknowledgment(config["acknowledgment"])
+        if config.get("ipv6_probe") is not None and probe.validate_config(config["ipv6_probe"]) != config["ipv6_probe"]:
+            raise tx.TransactionError("Noncanonical IPv6 probe configuration")
         return config
 
     @staticmethod
@@ -169,9 +176,22 @@ class RecoverySupervisor:
         backend = self.backend_factory(config["interface"], namespace=config.get("namespace"))
         return net.NetworkJournal(self.manager, run_id, backend)
 
+    def ipv6_probe(self, run_id: str, config: dict[str, Any]) -> probe.IPv6Probe | None:
+        if config.get("ipv6_probe") is None:
+            return None
+        backend = self.probe_backend_factory(config["interface"], namespace=config.get("namespace"))
+        return probe.IPv6Probe(self.manager, run_id, backend, connector=self.probe_connector)
+
+    def verify_probe(self, run_id: str, config: dict[str, Any]) -> None:
+        participant = self.ipv6_probe(run_id, config)
+        if participant is not None:
+            if participant.load()["config"] != config["ipv6_probe"]:
+                raise tx.TransactionError("IPv6 probe differs from its armed contract")
+            participant.verify_passed_locked()
+
     def arm(self, run_id: str, report: dict[str, Any], *, interface: str,
             operations: list[dict[str, Any]], timeout: int = 300, namespace: str | None = None,
-            ssh_targets: list[str] | None = None) -> None:
+            ssh_targets: list[str] | None = None, ipv6_probe: dict | None = None) -> None:
         if self.manager.owner != 0 and self.manager.fs.root == Path("/"):
             raise tx.TransactionError("System recovery requires root")
         if namespace is not None and self.manager.fs.root == Path("/"):
@@ -182,6 +202,9 @@ class RecoverySupervisor:
         texts = unit_texts(run_id, worker, self.manager.state_dir, timeout, deadline)
         self.systemd.ready()
         generation = self.systemd.generation()
+        ipv6_probe = probe.validate_config(ipv6_probe) if ipv6_probe is not None else None
+        if report.get("ipv6_probe") is not None and report["ipv6_probe"] != ipv6_probe:
+            raise tx.StalePlan("IPv6 probe differs from the reviewed host plan")
         acknowledgment = None
         if ssh_targets is not None:
             account = self.session_inspector.account()
@@ -207,10 +230,10 @@ class RecoverySupervisor:
                       "deadline_ns": deadline, "monotonic_deadline_ns": time.monotonic_ns() + timeout * 1_000_000_000,
                       "generation": generation, "phase": "arming", "units": unit_names(run_id),
                       "bundle_sha256": {}, "unit_texts": texts, "report": report,
-                      "acknowledgment": acknowledgment}
+                      "acknowledgment": acknowledgment, "ipv6_probe": ipv6_probe}
             network = self.network(run_id, config)
             network.prepare_locked(operations)
-            if acknowledgment is not None:
+            if acknowledgment is not None or ipv6_probe is not None:
                 projected = {net.identity(obj): obj for obj in network.load()["before"]["objects"]}
                 for operation in network.load()["operations"]:
                     if operation["action"] == "add":
@@ -218,8 +241,20 @@ class RecoverySupervisor:
                     else:
                         projected.pop(net.identity(operation["object"]), None)
                 addresses = {obj["cidr"].split("/")[0] for obj in projected.values() if obj["kind"] == "address"}
-                if not set(acknowledgment["targets"]) <= addresses:
+                if acknowledgment is not None and not set(acknowledgment["targets"]) <= addresses:
                     raise tx.TransactionError("SSH acknowledgment targets are absent from the planned final addresses")
+                if ipv6_probe is not None:
+                    candidate = ipv6_probe["cidr"]
+                    v6_addresses = {obj["cidr"] for obj in projected.values() if obj["kind"] == "address" and obj["family"] == 6}
+                    additions = [entry["object"]["cidr"] for entry in network.load()["operations"]
+                                 if entry["action"] == "add" and entry["object"]["kind"] == "address" and entry["object"]["family"] == 6]
+                    defaults = [obj for obj in projected.values() if obj["kind"] == "route" and obj["family"] == 6 and obj["dst"] == "::/0"]
+                    if (candidate not in v6_addresses or any(address != candidate for address in additions)
+                            or len(defaults) != 1 or defaults[0].get("gateway") != ipv6_probe["gateway"]):
+                        raise tx.TransactionError("IPv6 probe must match the planned permanent candidate and default gateway")
+            participant = self.ipv6_probe(run_id, config)
+            if participant is not None:
+                participant.prepare_locked(ipv6_probe, network.load()["before"])
             self.manager._directory(worker_dir, create=True)
             for name in BUNDLE:
                 data = Path(__file__).absolute().with_name(name).read_bytes()
@@ -288,6 +323,17 @@ class RecoverySupervisor:
             network = self.network(run_id, config)
             if network.backend.snapshot() != network.load()["before"]:
                 raise tx.StalePlan("Live network changed before worker application")
+            participant = self.ipv6_probe(run_id, config)
+            if participant is not None:
+                if participant.load()["config"] != config["ipv6_probe"]:
+                    raise tx.StalePlan("Prepared IPv6 probe differs from the reviewed contract")
+                participant.run_locked()
+                self.verify_probe(run_id, config)
+        if (self.systemd.generation() != config["generation"]
+                or time.monotonic_ns() >= config["monotonic_deadline_ns"]
+                or time.time_ns() >= config["deadline_ns"]
+                or not self.systemd.active(config["units"]["timer"])):
+            raise tx.RecoveryError("Independent guard expired before permanent file application")
         self.manager.apply_files(run_id, refresh=lambda: config["report"])
         with self.manager._lock():
             self.network(run_id, config).apply_locked()
@@ -325,9 +371,20 @@ class RecoverySupervisor:
             # Both restorations run even if one fails. The active pointer is cleared
             # only after both succeed, or after observing a committed terminal run.
             network = self.network(run_id, config)
+            def recover_participants():
+                failures = []
+                participant = self.ipv6_probe(run_id, config)
+                for restore in ([lambda: participant.cleanup_locked(boot=different_boot)] if participant is not None else []) + \
+                               [lambda: network.recover_locked(boot=different_boot)]:
+                    try:
+                        restore()
+                    except (tx.TransactionError, OSError, ValueError, subprocess.SubprocessError) as error:
+                        failures.append(str(error))
+                if failures:
+                    raise tx.RecoveryError("; ".join(failures))
             try:
                 journal = self.manager._recover(run_id, coordinated=True,
-                                               participant=lambda: network.recover_locked(boot=different_boot))
+                                               participant=recover_participants)
             except (tx.TransactionError, OSError) as error:
                 config["phase"] = "recovery_failed"
                 config["failure"] = str(error)
@@ -356,6 +413,7 @@ class RecoverySupervisor:
                     or not self.systemd.active(config["units"]["timer"]) or verify() is not True):
                 raise tx.TransactionError("Health check failed or rollback deadline expired")
             self.network(run_id, config).verify_applied_locked()
+            self.verify_probe(run_id, config)
             self.manager._commit_locked(run_id, coordinated=True)
             config["phase"] = "committed"
             self.manager._save(self.path(run_id), config)
@@ -403,10 +461,12 @@ class RecoverySupervisor:
                 raise tx.TransactionError("Only the active completed transition can await SSH acknowledgment")
             self.verify_bundle(run_id, config)
             evidence = self.acknowledgment_guard(run_id, config)
+            self.verify_probe(run_id, config)
             self.network(run_id, config).verify_applied_locked()
             acknowledgment["phase"], acknowledgment["evidence"] = "acknowledging", evidence
             self.manager._save(self.path(run_id), config)
             def final_guard():
+                self.verify_probe(run_id, config)
                 self.network(run_id, config).verify_applied_locked()
                 if self.acknowledgment_guard(run_id, config) != evidence:
                     raise tx.TransactionError("SSH connection changed before terminal commit")

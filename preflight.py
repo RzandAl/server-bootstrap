@@ -652,6 +652,7 @@ def prepare_host_plan(profile: Any, account: Any, plan: dict[str, Any], timezone
         changes = []
     return {"mode": "read-only-preflight", "apply_available": False, "file_plan_available": not blockers,
             "connectivity_validated": False, "facts": facts, "blockers": list(dict.fromkeys(blockers)),
+            "ipv6_probe": plan.get("ipv6_probe"),
             "warnings": warnings, "files": changes,
             "watched_files": {path: state.fingerprint() for path, state in sorted(view.files.items())},
             "watched_patterns": dict(sorted(view.patterns.items())),
