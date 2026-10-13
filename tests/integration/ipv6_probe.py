@@ -19,7 +19,10 @@ CONFIG = {"cidr": "2001:db8:2::20/64", "gateway": "fe80::1",
 
 
 def command(arguments, **options):
-    return subprocess.run(arguments, capture_output=True, text=True, timeout=15, **options)
+    try:
+        return subprocess.run(arguments, capture_output=True, text=True, timeout=15, **options)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"Fixture command {error.cmd!r} failed: {error.stderr.strip()}") from error
 
 
 SERVER_CODE = r'''
@@ -77,11 +80,11 @@ class RoutedPeer:
         return command(["ip", "-n", namespace, *arguments], check=True)
 
     def firewall(self, *, block_candidate=False, block_echo=False):
-        forward = "ip6 saddr 2001:db8:2::/64 drop;" if block_candidate else ""
-        echo = "icmpv6 type echo-request drop;" if block_echo else ""
-        text = ("table inet rzandal_probe_test { "
-                "chain forward { type filter hook forward priority 0; policy accept; " + forward + " } "
-                "chain input { type filter hook input priority 0; policy accept; " + echo + " } }")
+        forward = "ip6 saddr 2001:db8:2::/64 drop" if block_candidate else ""
+        echo = "icmpv6 type echo-request drop" if block_echo else ""
+        text = ("table inet rzandal_probe_test {\n"
+                "chain forward {\n type filter hook forward priority 0; policy accept;\n" + forward + "\n}\n"
+                "chain input {\n type filter hook input priority 0; policy accept;\n" + echo + "\n}\n}\n")
         command(["ip", "netns", "exec", self.router, "nft", "-f", "-"], input=text, check=True)
 
     def sources(self):
