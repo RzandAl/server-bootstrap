@@ -54,7 +54,7 @@ jobs:
   recovery-integration:
     name: Exercise independent recovery with Debian systemd and kernel namespaces
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 18
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,6 +78,9 @@ jobs:
             sleep 1
           done
           exit 1
+
+      - name: Exercise reviewed Base and native APT in isolated target roots
+        run: docker exec --workdir /opt/bootstrap rzandal-recovery-ci python3 tests/integration/base_application.py -v
 
       - name: Test owned network changes and independent recovery
         run: docker exec --workdir /opt/bootstrap rzandal-recovery-ci python3 tests/integration/kernel_recovery.py -v
